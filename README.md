@@ -77,6 +77,14 @@ python3 tests/verify_restore.py --project=-Users-you-projects-foo
 
 See [NOTES.md](NOTES.md) for the full story: how the bug works, what Time Machine snapshots actually look like, what we tried that didn't work, and the verified working commands from the original recovery session.
 
+### See also
+
+This tool covers exactly one slice of the disappearing-Claude-chats problem: macOS, Time Machine, JSONLs deleted from disk. If that's not your situation, one of these may help:
+
+- **[ibrews/claude-session-recovery](https://github.com/ibrews/claude-session-recovery)** — your JSONLs are still on disk, but Claude Desktop's UI doesn't show them (index corruption after a crash/BSOD). Cross-platform; rebuilds the Desktop session index.
+- **[markwoitaszek/claude-session-recovery](https://github.com/markwoitaszek/claude-session-recovery)** — Claude Desktop crashes with "There was a problem with the session" on a specific large/complex chat. Cross-platform; extracts the JSONL to clean Markdown so you don't lose the conversation.
+- **[BasedGPT/claude-code-session-recovery](https://github.com/BasedGPT/claude-code-session-recovery)** — Windows-specific Claude Desktop metadata repair (orphan JSONLs, junction slug mismatches, missing groupings).
+
 ## License
 
 [MIT](LICENSE)
