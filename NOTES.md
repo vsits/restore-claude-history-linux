@@ -127,7 +127,7 @@ If those land well (replies, thumbs-up, repo traffic in GitHub Insights), expand
 Many affected users, but the threads are broader than just `cleanupPeriodDays`, so the comment needs more framing ("if your JSONLs were deleted from disk on macOS, this can get them back; doesn't help if X").
 
 - [x] [#26452 — Session Disappeared After Logout / Restart of Claude Code Desktop - HOW to restore the sessions ASAP???](https://github.com/anthropics/claude-code/issues/26452) — 45 comments, very active. *Posted 2026-05-25, anchored to @BasedGPT's bucket-3 decision tree.*
-- [ ] [#9258 — History Sessions lost in Vscode plugin](https://github.com/anthropics/claude-code/issues/9258) — 44 comments.
+- [x] [#9258 — History Sessions lost in Vscode plugin](https://github.com/anthropics/claude-code/issues/9258) — 44 comments. *Posted 2026-05-25, replying to @DeveloperAlly's root-cause-#5 anchor.*
 - [ ] [#38055 — Cowork: Minor version update permanently deletes chat history and scheduled tasks](https://github.com/anthropics/claude-code/issues/38055) — 18 comments.
 - [ ] [#12908 — Conversation History disappeared after update](https://github.com/anthropics/claude-code/issues/12908) — 13 comments.
 
