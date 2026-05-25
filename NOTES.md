@@ -22,13 +22,27 @@ So there are two layers.
 ```json
 "cleanupPeriodDays": 36500
 ```
-~100 years; no documented upper bound. Set this on every machine. It defangs the documented cleanup, but per the issues above, it doesn't protect you from app updates that ignore the setting, future changes in cleanup behavior, or anything else Anthropic decides to do to your local files down the road.
+~100 years; no documented upper bound. Set this on every machine. It *should* defang the documented cleanup in the common path, but it is a stopgap, not a panacea:
+
+- **Avoid `cleanupPeriodDays: 0`.** It reads as "off" but means *delete everything now* — the cutoff resolves to "now" and a separate check treats `0` as "don't persist new sessions either." Per [@ojura on #59248](https://github.com/anthropics/claude-code/issues/59248).
+- **The setting is bypassed by some session types.** Processes started with `--setting-sources local`, and SDK sessions with `settingSources: []` (including autonomously spawned subagents), don't read `~/.claude/settings.json` and fall back to the 30-day default. So even with `36500` set globally, a subagent or SDK-driven run can still wipe your transcripts. See [#41458](https://github.com/anthropics/claude-code/issues/41458), [#45735](https://github.com/anthropics/claude-code/issues/45735), and [@ojura on #59248](https://github.com/anthropics/claude-code/issues/59248).
+- **App updates may ignore the setting entirely.** See the issues listed above.
+
+A second prevention layer — a `SessionStart` hook that copies JSONLs out of `~/.claude/projects/` before the next cleanup pass can touch them — closes most of the remaining gap. Sketched by @ojura on [#59248](https://github.com/anthropics/claude-code/issues/59248); worth adding to our README as the recommended companion to `cleanupPeriodDays`.
 
 **Restoration** is [`restore_claude_history.py`](restore_claude_history.py). It assumes the worst has already happened and pulls your chats back out of Time Machine. It's what catches you when prevention fails — which, given the track record, is a "when" not an "if."
 
 ## Why updates seem to trigger this
 
-The precipitating event, in my experience, has not been "I left chats sitting around for 30+ days and `cleanupPeriodDays` finally got them." It's been: **I closed VS Code, reopened it, and the chats were gone.**
+**Update 2026-05-25:** [@ojura on #59248](https://github.com/anthropics/claude-code/issues/59248) identified one likely mechanism — almost certainly not the only one, given how long and how many ways this bug has manifested across updates: `cleanupOldSessionFiles` in `src/utils/cleanup.ts` deletes any `*.jsonl` whose **filesystem mtime** is older than `cleanupPeriodDays` ago — *not* the timestamp of the last message inside the file. Because mtime is externally mutable, anything that touches it without preserving the original flips a current session into "looks old, delete it" territory:
+
+- `cp` without `-p`, `tar -x`, `rsync` without `-a`
+- Cloud sync clients (Dropbox, iCloud) that rewrite files on conflict
+- Any script that normalizes mtimes — including, ironically, scripts written *to repair* the picker's chronology
+
+This is also why `restore_claude_history.py` goes out of its way to preserve the snapshot's original mtime and explicitly re-stamp after any retry (NOTES step 5 below). If a restore landed with a fresh `now` mtime, the next cleanup pass would happily delete months of work all over again.
+
+That said, the mtime story doesn't explain everything. Even with the flag set high *and* mtimes preserved, sessions still vanish around updates. The precipitating event, in my experience, has not been "I left chats sitting around for 30+ days and `cleanupPeriodDays` finally got them." It's been: **I closed VS Code, reopened it, and the chats were gone.**
 
 This has happened multiple times on this machine, even with `cleanupPeriodDays` set to a high value. The common factor across every occurrence is that *something updated* between close and reopen — but I can't always tell *what*. Candidates I've ruled in and not yet ruled out:
 
