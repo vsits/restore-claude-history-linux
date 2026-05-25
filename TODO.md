@@ -10,8 +10,10 @@ Suggested order (lowest cost / highest signal first):
 
 1. **Fill in `NOTES.md` → "Related GitHub issues" section.** Search `anthropics/claude-code` issues for: `cleanupPeriodDays`, `history deleted`, `lost chats`, `session not found`, `transcript missing`. Capture the URLs + a one-line summary of each. Aim for 3–8 active threads.
 
-2. **Comment on each of those issues.** Short, helpful, not spammy:
+2. **Comment on each of those issues.** Short, helpful, not spammy. Example:
+
    > Had this happen and built a recovery tool for it (macOS + Time Machine only): https://github.com/garrettmoss/restore-claude-history — also includes the one-line settings change to prevent it going forward.
+
    Don't post the same message verbatim everywhere; tweak per thread.
 
 3. **File a new issue on `anthropics/claude-code`** if no good thread exists for it. Title: "`cleanupPeriodDays` silently deletes chat history; recovery tool for macOS users". Body: explain the bug surface, link the repo, ask for either (a) UI exposure of the setting, (b) a warning before deletion, or (c) bumping the default. This is also the path to Anthropic actually *seeing* the work.

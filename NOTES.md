@@ -71,10 +71,10 @@ Open threads in `anthropics/claude-code` where users are hitting the disappearin
 
 ### Start here (highest-signal, lowest spam risk)
 
-Two threads, in order. Comment on **one**, wait a few days, then the next. Tailor each comment — don't paste the same text twice.
+In order — comment on one, wait a few days, then the next. Tailor each comment; don't paste verbatim.
 
-1. **[#59248 — Silent retention cleanup deletes session transcripts with no warning, opt-in, or recovery](https://github.com/anthropics/claude-code/issues/59248)** — the bug as described in the title *is* what this tool addresses. A recovery link is squarely on-topic, not spam. Best first comment.
-2. **[#41458 — `cleanupPeriodDays: 99999` ignored — 490 sessions silently deleted despite explicit setting](https://github.com/anthropics/claude-code/issues/41458)** — 10 comments, active, and the most-affected users (who set the flag and *still* lost data) are exactly the people who need recovery. Also the evidence that prevention alone isn't enough.
+- [x] **[#59248 — Silent retention cleanup deletes session transcripts with no warning, opt-in, or recovery](https://github.com/anthropics/claude-code/issues/59248)** — the bug as described in the title *is* what this tool addresses. A recovery link is squarely on-topic, not spam. Best first comment. *Posted 2026-05-24.*
+- [ ] **[#41458 — `cleanupPeriodDays: 99999` ignored — 490 sessions silently deleted despite explicit setting](https://github.com/anthropics/claude-code/issues/41458)** — 10 comments, active, and the most-affected users (who set the flag and *still* lost data) are exactly the people who need recovery. Also the evidence that prevention alone isn't enough.
 
 If those land well (replies, thumbs-up, repo traffic in GitHub Insights), expand to the next tier. If they get ignored or pushback, stop and rethink the message before posting more.
 
@@ -82,32 +82,32 @@ If those land well (replies, thumbs-up, repo traffic in GitHub Insights), expand
 
 Many affected users, but the threads are broader than just `cleanupPeriodDays`, so the comment needs more framing ("if your JSONLs were deleted from disk on macOS, this can get them back; doesn't help if X").
 
-- [#26452 — Session Disappeared After Logout / Restart of Claude Code Desktop - HOW to restore the sessions ASAP???](https://github.com/anthropics/claude-code/issues/26452) — 45 comments, very active.
-- [#9258 — History Sessions lost in Vscode plugin](https://github.com/anthropics/claude-code/issues/9258) — 44 comments.
-- [#38055 — Cowork: Minor version update permanently deletes chat history and scheduled tasks](https://github.com/anthropics/claude-code/issues/38055) — 18 comments.
-- [#12908 — Conversation History disappeared after update](https://github.com/anthropics/claude-code/issues/12908) — 13 comments.
+- [ ] [#26452 — Session Disappeared After Logout / Restart of Claude Code Desktop - HOW to restore the sessions ASAP???](https://github.com/anthropics/claude-code/issues/26452) — 45 comments, very active.
+- [ ] [#9258 — History Sessions lost in Vscode plugin](https://github.com/anthropics/claude-code/issues/9258) — 44 comments.
+- [ ] [#38055 — Cowork: Minor version update permanently deletes chat history and scheduled tasks](https://github.com/anthropics/claude-code/issues/38055) — 18 comments.
+- [ ] [#12908 — Conversation History disappeared after update](https://github.com/anthropics/claude-code/issues/12908) — 13 comments.
 
 ### Also relevant — core cleanup bug, smaller threads
 
-- [#46621 — Critical: Claude Code silently deletes conversation history without user consent](https://github.com/anthropics/claude-code/issues/46621)
-- [#46175 — Feature Request: Notify users before auto-deleting conversation history](https://github.com/anthropics/claude-code/issues/46175)
-- [#60368 — Background-fleet `deleteJob` silently unlinks main session JSONL despite `cleanupPeriodDays: 36500`](https://github.com/anthropics/claude-code/issues/60368) — another path that bypasses the setting.
-- [#16970 — claude is losing chat history](https://github.com/anthropics/claude-code/issues/16970)
-- [#54092 — Local CLI conversations silently disappear from disk — multiple chats lost, JSONL files gone](https://github.com/anthropics/claude-code/issues/54092)
-- [#61952 — ~20 sessions lost, only 11 survived - 2 months of work I paid for - gone](https://github.com/anthropics/claude-code/issues/61952)
-- [#61038 — Old chats wiped, no session summary](https://github.com/anthropics/claude-code/issues/61038)
-- [#49903 — Claude Code transcripts loss](https://github.com/anthropics/claude-code/issues/49903)
-- [#61608 — Sessions not saved to disk — "Session not found on disk" on reopen](https://github.com/anthropics/claude-code/issues/61608) — has the exact UI string from the Desktop failure mode in TODO step 2.
+- [ ] [#46621 — Critical: Claude Code silently deletes conversation history without user consent](https://github.com/anthropics/claude-code/issues/46621)
+- [ ] [#46175 — Feature Request: Notify users before auto-deleting conversation history](https://github.com/anthropics/claude-code/issues/46175)
+- [ ] [#60368 — Background-fleet `deleteJob` silently unlinks main session JSONL despite `cleanupPeriodDays: 36500`](https://github.com/anthropics/claude-code/issues/60368) — another path that bypasses the setting.
+- [ ] [#16970 — claude is losing chat history](https://github.com/anthropics/claude-code/issues/16970)
+- [ ] [#54092 — Local CLI conversations silently disappear from disk — multiple chats lost, JSONL files gone](https://github.com/anthropics/claude-code/issues/54092)
+- [ ] [#61952 — ~20 sessions lost, only 11 survived - 2 months of work I paid for - gone](https://github.com/anthropics/claude-code/issues/61952)
+- [ ] [#61038 — Old chats wiped, no session summary](https://github.com/anthropics/claude-code/issues/61038)
+- [ ] [#49903 — Claude Code transcripts loss](https://github.com/anthropics/claude-code/issues/49903)
+- [ ] [#61608 — Sessions not saved to disk — "Session not found on disk" on reopen](https://github.com/anthropics/claude-code/issues/61608) — has the exact UI string from the Desktop failure mode in TODO step 2.
 
 ### For the Desktop follow-up (later)
 
 Not for the current script — relevant when the Claude Desktop recovery work in TODO kicks off.
 
-- [#48334 — Desktop app update deletes session history (`sessions-index.json` + `.jsonl` files)](https://github.com/anthropics/claude-code/issues/48334)
-- [#38691 — All sessions lost after Claude Desktop update on Windows (data intact on disk)](https://github.com/anthropics/claude-code/issues/38691)
-- [#51412 — Desktop App 2.1.111 upgrade: Code session index wiped (recoverable via workaround); Cowork history disappeared](https://github.com/anthropics/claude-code/issues/51412)
-- [#59736 — Desktop 3p Code sessions disappear from UI after restart while JSONL transcripts remain on disk](https://github.com/anthropics/claude-code/issues/59736)
-- [#55418 — Code Desktop sessions display in sidebar but content is permanently inaccessible — audit.jsonl never recoverable, `sessiondata.img` is encrypted "shdw" container](https://github.com/anthropics/claude-code/issues/55418) — sobering: some Desktop data may be unrecoverable even with snapshots.
+- [ ] [#48334 — Desktop app update deletes session history (`sessions-index.json` + `.jsonl` files)](https://github.com/anthropics/claude-code/issues/48334)
+- [ ] [#38691 — All sessions lost after Claude Desktop update on Windows (data intact on disk)](https://github.com/anthropics/claude-code/issues/38691)
+- [ ] [#51412 — Desktop App 2.1.111 upgrade: Code session index wiped (recoverable via workaround); Cowork history disappeared](https://github.com/anthropics/claude-code/issues/51412)
+- [ ] [#59736 — Desktop 3p Code sessions disappear from UI after restart while JSONL transcripts remain on disk](https://github.com/anthropics/claude-code/issues/59736)
+- [ ] [#55418 — Code Desktop sessions display in sidebar but content is permanently inaccessible — audit.jsonl never recoverable, `sessiondata.img` is encrypted "shdw" container](https://github.com/anthropics/claude-code/issues/55418) — sobering: some Desktop data may be unrecoverable even with snapshots.
 
 ## Origin
 
