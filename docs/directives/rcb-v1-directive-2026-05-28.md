@@ -1,7 +1,7 @@
 # RCB v1 Directive — Linux Port of restore-claude-history
 
 **Date:** 2026-05-28
-**Version:** v5 (revised after Codex Rounds 1–4)
+**Version:** v6 (revised after Codex Rounds 1–5)
 **Author:** AI Team Lead
 **Implementer:** vsits-restore-claude-builder (RCB)
 **Reviewer:** Codex Review Agent
@@ -19,6 +19,7 @@
 - **v3 (2026-05-28):** Codex Round 2 addressed — the Round 1 fix to Finding 1 introduced an internal contradiction (Phase 2 supposedly ships Btrfs with Timeshift-skip logic; Phase 3 supposedly wires up the skip — incompatible). Moved overlap resolution from per-backend `discover()` into the orchestrator, where the overlap-resolution table is a single source of truth and skip rules only fire when the owning backend is actually registered. ABC docstring, overlap section, and Phase 2/3 descriptions now consistent.
 - **v4 (2026-05-28):** Codex Round 3 addressed — v3's "prune when owner is available" rule reintroduced a false-negative path (if owner `is_available()=True` but `discover()` returned zero due to config drift or parser failure, valid peer snapshots would still be stripped). Tightened the rule: pruning happens only when the owner backend positively returns at least one snapshot matching the claimed-path-pattern in this run. Also specified that explicit `--backend <name>` mode bypasses overlap resolution entirely.
 - **v5 (2026-05-28):** Codex Round 4 addressed — v4's "namespace-wide pruning on positive hit" still allowed false negatives on partial owner discovery (owner finds A and B under `/timeshift/snapshots/` but misses C; orchestrator prunes all three from peers). Tightened to per-snapshot exact-path-match: only the specific snapshot paths the owner actually returned in this run get pruned from peers. The "claimed-path-pattern" in the overlap table is now an informational heuristic for `--list-backends`, not a pruning rule. Also fixed Version header and design-choices recap to reflect v5 as the rule's landing point.
+- **v6 (2026-05-28):** Codex Round 5 addressed — v5 left stale wording in the overlap table's "Why" column ("backend skips paths under X") that contradicted the orchestrator-only pruning model and risked sending the implementer back to the rejected v1 design. Rewrote the table entries to describe disambiguation rationale (which backend wins on duplicate paths in `auto` mode), explicitly noting that no backend skips paths in `discover()`. Also narrowed the `realpath` canonicalization claim: handles symlinks + lexical normalization but NOT bind-mount aliasing; bind-mount duplicates surface as duplicates (correctly triggering ambiguity error or duplicate output, user disambiguates with `--backend`); `(st_dev, st_ino)` identity is future work if needed.
 
 ## Goal
 
@@ -76,14 +77,16 @@ When the same physical snapshots are visible to multiple backends, the directive
 
 | Snapshot source | Owner backend | Why |
 |---|---|---|
-| Timeshift-on-Btrfs (Timeshift configured with Btrfs subvolume snapshots) | `timeshift` | Timeshift's config is the source of truth; `btrfs` backend skips paths under `/timeshift/snapshots/` |
-| Snapper-on-Btrfs (when Snapper v1.1 lands) | `snapper` | Snapper's config is source of truth; `btrfs` backend skips paths under `/.snapshots/` |
-| Bare Btrfs subvolumes (no Timeshift/Snapper management) | `btrfs` | No higher-layer config exists |
-| Bare ZFS snapshots | `zfs` | No overlap with other v1 backends |
+| Timeshift-on-Btrfs (Timeshift configured with Btrfs subvolume snapshots) | `timeshift` | If both `timeshift.discover()` and `btrfs.discover()` return the same snapshot path in an `auto` run, the orchestrator keeps the Timeshift entry and discards the Btrfs duplicate. Rationale: Timeshift's config carries snapshot intent that bare Btrfs introspection cannot recover (retention policy, snapshot purpose). Neither backend skips paths in its own `discover()` — pruning happens only at the orchestrator. |
+| Snapper-on-Btrfs (when Snapper v1.1 lands) | `snapper` | Same pattern: orchestrator keeps the Snapper entry and discards Btrfs duplicates of the same path. Snapper's config carries snapshot intent (pre/post, single, etc.). |
+| Bare Btrfs subvolumes (no Timeshift/Snapper management) | `btrfs` | No higher-layer backend can claim these; Btrfs entries stand. |
+| Bare ZFS snapshots | `zfs` | No path-level overlap with other v1 backends. |
 
 **The orchestrator applies the overlap-resolution table after discovery completes, gated on per-snapshot positive claim.** Each backend's `discover()` reports what its tooling reports — no backend needs to know about its peers. After all backends have returned their `DiscoveredSnapshot` lists, the orchestrator deduplicates as follows:
 
-> For each `DiscoveredSnapshot` returned by an owner backend (per the table above) at path `data_root=P`, the orchestrator removes from peer backends' lists any `DiscoveredSnapshot` whose `data_root` is `P` (after path canonicalization — `realpath` resolution to handle symlinks and bind mounts). Mere `is_available()=True` on the owner is insufficient; namespace-wide claim is insufficient; only the specific snapshot paths the owner actually returned in this run get pruned from peers.
+> For each `DiscoveredSnapshot` returned by an owner backend (per the table above) at path `data_root=P`, the orchestrator removes from peer backends' lists any `DiscoveredSnapshot` whose `data_root` matches `P` after canonicalization. Mere `is_available()=True` on the owner is insufficient; namespace-wide claim is insufficient; only the specific snapshot paths the owner actually returned in this run get pruned from peers.
+>
+> **Canonicalization in v1:** `os.path.realpath()` (resolves symlinks + lexical normalization). This catches the common case of one backend reporting `/timeshift/snapshots/2026-05-28_00-00-01/backup/@home` and another reporting the same path via a symlinked entry point. **Known limitation:** `realpath` does NOT canonicalize bind-mount aliases — the same underlying snapshot data reachable via two bind-mount entry points would remain two distinct canonical paths and survive deduplication as duplicates. v1 accepts this (duplicates appear in `auto` output, ambiguity error fires correctly, user can disambiguate with `--backend`). If bind-mount aliasing surfaces as a real problem in v1.1+, the fix is `(st_dev, st_ino)` identity on the snapshot root rather than path equality; this is tracked as future work, not v1 scope.
 
 This closes three failure modes:
 1. **Owner zero-discovery** (Round 3): Owner is available but returned nothing — no pruning, peers' results stand. ✓
