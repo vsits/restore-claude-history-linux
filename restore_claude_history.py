@@ -15,6 +15,8 @@ or IDE running this. See NOTES.md for background.
 
 from __future__ import annotations
 
+__version__ = "1.0.0"
+
 import argparse
 import getpass
 import os
@@ -357,6 +359,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Restore deleted Claude Code chat transcripts from Time Machine snapshots.",
     )
+    p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     p.add_argument("--dry-run", action="store_true",
                    help="show what would be restored; copy nothing")
     p.add_argument("--project", metavar="NAME",
