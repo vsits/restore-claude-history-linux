@@ -3,41 +3,44 @@
 restore_claude_history.py
 
 Recover deleted Claude Code chat transcripts (~/.claude/projects/<project>/*.jsonl)
-from macOS Time Machine APFS snapshots.
+from Linux filesystem snapshots (ZFS / Btrfs / Timeshift / ...).
 
 For each (project, filename) seen across all snapshots, picks the LARGEST
 version (JSONLs are append-only, so bigger == more complete) and copies it
-back, preserving mtime and stripping the inherited Time Machine ACL.
+back, preserving mtime and stripping any inherited ACL.
 
-macOS + APFS Time Machine only. Requires Full Disk Access for the terminal
-or IDE running this. See NOTES.md for background.
+Linux port of garrettmoss/restore-claude-history (macOS Time Machine). The
+recovery logic is unchanged; only the snapshot-discovery layer is replaced
+with a pluggable backend abstraction. See docs/ and AGENTS.md for background.
 """
 
 from __future__ import annotations
 
 import argparse
-import getpass
 import os
-import re
 import shutil
 import stat
 import subprocess
 import sys
-import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
+from typing import NoReturn
+
+from backends import default_registry
+from backends.base import DiscoveredSnapshot, SnapshotBackend
+
+# Overlap ownership for --backend auto deduplication. Each (owner, peer) pair
+# means: when both backends return a snapshot at the same canonical path, keep
+# the owner's entry and prune the peer's duplicate. Entries for backends not
+# yet registered are harmless no-ops. See the v1 directive's
+# "Backend-overlap resolution rules".
+DEFAULT_OWNERSHIP: list[tuple[str, str]] = [
+    ("timeshift", "btrfs"),   # Timeshift config carries snapshot intent (Phase 3)
+    ("snapper", "btrfs"),     # future: Snapper config carries snapshot intent
+]
 
 
 # -------- types --------
-
-
-@dataclass
-class Snapshot:
-    """One APFS snapshot on the TM volume."""
-
-    name: str                # e.g. "com.apple.TimeMachine.2026-04-24-205237.backup"
-    mountpoint: Path | None = None
-    owned_by_us: bool = False  # True if we mount_apfs'd it (cleanup will unmount)
 
 
 @dataclass
@@ -47,7 +50,18 @@ class JsonlEntry:
     project: str             # encoded project dir name
     filename: str            # <uuid>.jsonl
     size: int
-    src: Path                # absolute path inside the (mounted) snapshot
+    src: Path                # absolute path inside the snapshot
+
+
+@dataclass
+class Options:
+    backend: str = "auto"
+    list_backends: bool = False
+    dry_run: bool = False
+    project: str | None = None
+    include_memory: bool = False
+    verbose: bool = False
+    dest: Path | None = None
 
 
 # -------- shell helpers --------
@@ -58,154 +72,117 @@ def run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, capture_output=True, text=True, check=check)
 
 
-def die(msg: str) -> "NoReturn":  # type: ignore[name-defined]
+def die(msg: str) -> NoReturn:
     print(f"error: {msg}", file=sys.stderr)
     sys.exit(1)
 
 
-# -------- TM device detection --------
+# -------- backend orchestration --------
 
 
-def find_tm_device() -> str:
+def canonical(path: Path) -> str:
+    """Canonicalize a snapshot path for cross-backend equality.
+
+    os.path.realpath resolves symlinks + lexical normalization. Known v1
+    limitation: it does NOT canonicalize bind-mount aliases — those survive as
+    distinct paths (and correctly surface as duplicates / ambiguity). See the
+    directive's canonicalization note.
     """
-    Return e.g. 'disk5s2' — the APFS volume that is the user's TM destination.
+    return os.path.realpath(str(path))
 
-    `tmutil destinationinfo` is authoritative; it lists the actual TM
-    destinations and their mount points. We resolve the mount point back to
-    a BSD device via `diskutil info`. Falls back to scanning APFS volumes
-    whose *volume name* contains "Time Machine" if tmutil has nothing.
 
-    Why we don't just grep `diskutil info <dev>` for "Time Machine": that
-    field also lists snapshot names, and every Mac with local TM snapshots
-    on the internal disk will match — so we'd accidentally pick the
-    internal data volume.
+def resolve_overlaps(
+    discovered: dict[str, list[DiscoveredSnapshot]],
+    ownership: list[tuple[str, str]],
+) -> dict[str, list[DiscoveredSnapshot]]:
+    """Deduplicate snapshots seen by multiple backends (auto mode only).
+
+    Per-snapshot, exact-path-match pruning gated on positive claim: for each
+    (owner, peer) pair, remove from the peer's list any snapshot whose
+    canonical data_root matches a path the OWNER actually returned this run.
+    An owner that returned nothing prunes nothing (closes the false-negative
+    paths from Codex Rounds 3/4).
     """
-    info = run(["tmutil", "destinationinfo"], check=False).stdout
-    for mp in re.findall(r"^Mount Point\s*:\s*(.+)$", info, re.MULTILINE):
-        dev_info = run(["diskutil", "info", mp.strip()], check=False).stdout
-        m = re.search(r"Device Node:\s*/dev/(disk\d+s\d+)", dev_info)
-        if m:
-            return m.group(1)
-
-    # Fallback: scan APFS volumes by *volume name* (not the full info blob).
-    listing = run(["diskutil", "list"]).stdout
-    # Lines: "   1:    APFS Volume Sapphire Time Machine   148.1 GB   disk5s2"
-    for line in listing.splitlines():
-        m = re.match(r"\s*\d+:\s+APFS Volume\s+(.+?)\s+[\d.]+\s+\w+\s+(disk\d+s\d+)", line)
-        if m and re.search(r"time\s*machine", m.group(1), re.IGNORECASE):
-            return m.group(2)
-
-    die("No Time Machine APFS volume detected. Plug in your TM drive and try again.")
+    out = {name: list(snaps) for name, snaps in discovered.items()}
+    for owner, peer in ownership:
+        if owner not in out or peer not in out:
+            continue
+        owner_paths = {canonical(s.data_root) for s in out[owner]}
+        if not owner_paths:
+            continue
+        out[peer] = [s for s in out[peer] if canonical(s.data_root) not in owner_paths]
+    return out
 
 
-def list_snapshots(device: str) -> list[str]:
-    """List snapshot names on /dev/<device>.
-
-    `diskutil apfs listSnapshots` outputs a tree with leading pipe chars:
-        |   Name:   com.apple.TimeMachine.<ts>.backup
-    so we match Name: anywhere on the line, not just after whitespace.
-    """
-    out = run(["diskutil", "apfs", "listSnapshots", f"/dev/{device}"], check=False).stdout
-    return [m.group(1).strip() for m in re.finditer(r"Name:\s*(\S+)", out)]
-
-
-# -------- mount management --------
-
-
-def existing_mounts() -> dict[str, Path]:
-    """Map snapshot-name -> mountpoint for snapshots macOS already has mounted."""
-    out = run(["mount"], check=False).stdout
-    result: dict[str, Path] = {}
-    # Lines look like:
-    # com.apple.TimeMachine.<ts>.backup@/dev/diskNsM on /Volumes/.timemachine/<UUID>/<ts>.backup (apfs, ...)
-    for line in out.splitlines():
-        m = re.match(r"^(com\.apple\.TimeMachine\.[^@]+\.backup)@\S+ on (.+) \(", line)
-        if m:
-            result[m.group(1)] = Path(m.group(2))
-    return result
+def select_auto(
+    discovered: dict[str, list[DiscoveredSnapshot]],
+) -> tuple[str, list[DiscoveredSnapshot]]:
+    """Apply --backend auto selection rules; die() on zero or ambiguous."""
+    nonempty = {name: snaps for name, snaps in discovered.items() if snaps}
+    if not nonempty:
+        die(
+            "no snapshots found on any backend. Check `--list-backends` and "
+            "verify your snapshot tool (zfs/btrfs/timeshift) is installed and "
+            "has snapshots."
+        )
+    if len(nonempty) > 1:
+        lines = ["multiple backends found candidate snapshots; re-run with "
+                 "--backend <name> to disambiguate:"]
+        for name, snaps in sorted(nonempty.items()):
+            example = snaps[0].data_root if snaps else ""
+            lines.append(f"  --backend {name}: {len(snaps)} snapshot(s), e.g. {example}")
+        die("\n".join(lines))
+    name = next(iter(nonempty))
+    return name, nonempty[name]
 
 
-def mount_snapshot(snap: Snapshot, device: str, tmp_root: Path) -> bool:
-    """Mount `snap` ourselves under tmp_root. Returns True on success."""
-    label = snap.name.removeprefix("com.apple.TimeMachine.").removesuffix(".backup")
-    mp = tmp_root / f"snap-{label}"
-    mp.mkdir(parents=True, exist_ok=True)
-    try:
-        run(["mount_apfs", "-s", snap.name, f"/dev/{device}", str(mp)])
-    except subprocess.CalledProcessError as e:
-        print(f"  warn: failed to mount {snap.name}: {e.stderr.strip()}", file=sys.stderr)
-        try:
-            mp.rmdir()
-        except OSError:
-            pass
-        return False
-    snap.mountpoint = mp
-    snap.owned_by_us = True
-    return True
-
-
-def unmount_if_ours(snap: Snapshot) -> None:
-    """Unmount + rmdir a snapshot we mounted. Borrowed mounts are left alone."""
-    if not (snap.owned_by_us and snap.mountpoint):
-        return
-    mp = snap.mountpoint
-    # Try graceful unmount, then forced.
-    for args in (["diskutil", "unmount", str(mp)],
-                 ["diskutil", "unmount", "force", str(mp)]):
-        r = run(args, check=False)
-        if r.returncode == 0:
-            break
-    try:
-        mp.rmdir()
-    except OSError:
-        pass
+def list_backends(registry: list[SnapshotBackend]) -> int:
+    """Print each backend's availability + discovered snapshot count."""
+    for b in registry:
+        available = b.is_available()
+        count: int | str = 0
+        if available:
+            try:
+                count = len(b.discover())
+            except Exception:  # noqa: BLE001 - listing must never crash
+                count = "?"
+        print(f"{b.name:10}  available={str(available).lower():5}  snapshots={count}")
+    return 0
 
 
 # -------- data layout probing --------
 
 
-def find_data_root(mp: Path) -> Path | None:
-    """
-    Locate the 'Data' dir inside a snapshot mountpoint.
+def locate_projects_dir(data_root: Path, home: Path) -> Path | None:
+    """Find ``.claude/projects`` inside a snapshot root.
 
-    Two known layouts:
-      1. mount_apfs we did ourselves:  <mp>/<ts>.backup/Data/Users/...
-      2. macOS auto-mount:             <mp>/<ts>.backup/Data/Users/...  (same)
-                                  OR   <mp>/Data/Users/...              (sometimes)
+    A snapshot's data_root may be the root of any filesystem that contains the
+    user's home. Depending on what was snapshotted, projects live at one of:
+      <data_root>/home/<user>/.claude/projects   (snapshot of /)
+      <data_root>/<user>/.claude/projects         (snapshot of /home)
+      <data_root>/.claude/projects                (snapshot of /home/<user>)
+    We try progressively shorter suffixes of the home path and return the
+    first that exists.
     """
-    if (mp / "Data" / "Users").is_dir():
-        return mp / "Data"
-    for child in mp.glob("*.backup"):
-        if (child / "Data" / "Users").is_dir():
-            return child / "Data"
+    parts = home.parts
+    rel = list(parts[1:]) if parts and parts[0] == os.sep else list(parts)
+    for i in range(len(rel) + 1):
+        candidate = data_root.joinpath(*rel[i:], ".claude", "projects")
+        if candidate.is_dir():
+            return candidate
     return None
 
 
 # -------- indexing --------
 
 
-def index_snapshot(
-    snap: Snapshot,
-    user: str,
+def index_projects(
+    projects_dir: Path,
     only_project: str | None,
-    verbose: bool,
 ) -> list[JsonlEntry]:
-    """Walk one mounted snapshot and return every JSONL it contains."""
-    if snap.mountpoint is None:
-        return []
-    data = find_data_root(snap.mountpoint)
-    if data is None:
-        if verbose:
-            print(f"  {snap.name}: no Data/ dir under {snap.mountpoint}")
-        return []
-    projects = data / "Users" / user / ".claude" / "projects"
-    if not projects.is_dir():
-        if verbose:
-            print(f"  {snap.name}: no projects dir at {projects}")
-        return []
-
+    """Walk one snapshot's projects dir and return every JSONL it contains."""
     entries: list[JsonlEntry] = []
-    for proj_dir in projects.iterdir():
+    for proj_dir in projects_dir.iterdir():
         if not proj_dir.is_dir():
             continue
         if only_project and proj_dir.name != only_project:
@@ -239,8 +216,16 @@ def pick_largest(entries: list[JsonlEntry]) -> dict[tuple[str, str], JsonlEntry]
 
 
 def strip_acl_and_make_writable(path: Path) -> None:
-    """Remove the inherited TM ACL and ensure the user can overwrite."""
-    run(["chmod", "-N", str(path)], check=False)
+    """Remove any inherited ACL and ensure the user can overwrite.
+
+    ``setfacl -b`` clears ACLs on ext4/xfs/btrfs mounted with ACL support and
+    is a harmless no-op where ACLs are absent. Missing setfacl (or a
+    filesystem that rejects it) is non-fatal — we still fix the write bit.
+    """
+    try:
+        run(["setfacl", "-b", str(path)], check=False)
+    except FileNotFoundError:
+        pass
     try:
         st = path.stat()
         path.chmod(st.st_mode | stat.S_IWUSR)
@@ -248,7 +233,9 @@ def strip_acl_and_make_writable(path: Path) -> None:
         pass
 
 
-def restore_file(entry: JsonlEntry, claude_dir: Path, dry_run: bool, verbose: bool) -> tuple[bool, int]:
+def restore_file(
+    entry: JsonlEntry, claude_dir: Path, dry_run: bool, verbose: bool
+) -> tuple[bool, int]:
     """
     Restore one JSONL if the on-disk version is missing or smaller.
     Returns (restored, bytes).
@@ -271,8 +258,8 @@ def restore_file(entry: JsonlEntry, claude_dir: Path, dry_run: bool, verbose: bo
     if dest.exists():
         strip_acl_and_make_writable(dest)
 
-    # shutil.copy2 preserves mtime via copystat; we still touch -r below in
-    # case any future ACL/permission shenanigans break copystat.
+    # shutil.copy2 preserves mtime via copystat; we still os.utime below in
+    # case any ACL/permission shenanigans break copystat.
     shutil.copy2(entry.src, dest)
     try:
         src_stat = entry.src.stat()
@@ -287,8 +274,7 @@ def restore_file(entry: JsonlEntry, claude_dir: Path, dry_run: bool, verbose: bo
 
 
 def restore_subdirs(
-    snapshots: list[Snapshot],
-    user: str,
+    located: list[tuple[str, Path]],
     claude_dir: Path,
     only_project: str | None,
     include_memory: bool,
@@ -297,25 +283,12 @@ def restore_subdirs(
 ) -> int:
     """
     Restore per-session subdirs (subagents/, etc.) and optionally memory/.
-    Walks snapshots newest-first; first writer wins. Skips dirs that already
-    exist on disk.
+    Walks snapshots newest-first (lexical sort on snapshot name); first writer
+    wins. Skips dirs that already exist on disk.
     """
-    # Sort newest-first by snapshot name (timestamp is embedded, so lexical
-    # sort works).
-    snaps_sorted = sorted(
-        (s for s in snapshots if s.mountpoint),
-        key=lambda s: s.name,
-        reverse=True,
-    )
+    located_sorted = sorted(located, key=lambda t: t[0], reverse=True)
     copied = 0
-    for snap in snaps_sorted:
-        assert snap.mountpoint is not None
-        data = find_data_root(snap.mountpoint)
-        if data is None:
-            continue
-        projects = data / "Users" / user / ".claude" / "projects"
-        if not projects.is_dir():
-            continue
+    for _snap_name, projects in located_sorted:
         for proj_dir in projects.iterdir():
             if not proj_dir.is_dir():
                 continue
@@ -340,7 +313,6 @@ def restore_subdirs(
                 except OSError as e:
                     print(f"  fail: copytree {sub} -> {dest}: {e}", file=sys.stderr)
                     continue
-                # Strip ACL on every file in the new tree.
                 for root, _dirs, files in os.walk(dest):
                     for name in files:
                         strip_acl_and_make_writable(Path(root) / name)
@@ -350,18 +322,111 @@ def restore_subdirs(
     return copied
 
 
+# -------- orchestration --------
+
+
+def choose_snapshots(
+    registry: list[SnapshotBackend], opts: Options
+) -> tuple[SnapshotBackend, list[DiscoveredSnapshot]]:
+    """Resolve which backend + snapshots to use, honoring --backend semantics."""
+    by_name = {b.name: b for b in registry}
+
+    if opts.backend == "auto":
+        available = [b for b in registry if b.is_available()]
+        discovered = {b.name: b.discover() for b in available}
+        discovered = resolve_overlaps(discovered, DEFAULT_OWNERSHIP)
+        name, snaps = select_auto(discovered)
+        print(f"Selected backend: {name}")
+        return by_name[name], snaps
+
+    # Explicit backend: run ONLY that backend, skip overlap resolution.
+    backend = by_name.get(opts.backend)
+    if backend is None:
+        die(f"unknown backend '{opts.backend}'. Known: {', '.join(sorted(by_name))}.")
+    if not backend.is_available():
+        die(f"backend '{opts.backend}' is not available on this system.")
+    snaps = backend.discover()
+    if not snaps:
+        die(f"backend '{opts.backend}' found no snapshots.")
+    return backend, snaps
+
+
+def run_restore(registry: list[SnapshotBackend], opts: Options) -> int:
+    if opts.list_backends:
+        return list_backends(registry)
+
+    home = Path.home()
+    claude_dir = opts.dest if opts.dest else home / ".claude" / "projects"
+    if opts.dest:
+        print(f"Destination override: {claude_dir}")
+
+    backend, snaps = choose_snapshots(registry, opts)
+    print(f"Found {len(snaps)} snapshot(s).")
+
+    # Mount (no-op for auto-mounted backends), locate projects, index.
+    located: list[tuple[str, Path]] = []
+    all_entries: list[JsonlEntry] = []
+    try:
+        for snap in snaps:
+            root = backend.ensure_mounted(snap)
+            projects = locate_projects_dir(root, home)
+            if projects is None:
+                if opts.verbose:
+                    print(f"  {snap.name}: no .claude/projects under {root}")
+                continue
+            located.append((snap.name, projects))
+            all_entries.extend(index_projects(projects, opts.project))
+
+        if not all_entries:
+            die("No Claude JSONL files found in any snapshot.")
+
+        best = pick_largest(all_entries)
+        print(f"Indexed {len(best)} unique (project, jsonl) pairs across snapshots.")
+
+        restored = 0
+        total_bytes = 0
+        skipped = 0
+        for entry in sorted(best.values(), key=lambda e: (e.project, e.filename)):
+            ok, n = restore_file(entry, claude_dir, opts.dry_run, opts.verbose)
+            if ok:
+                restored += 1
+                total_bytes += n
+            else:
+                skipped += 1
+
+        subdirs = restore_subdirs(
+            located, claude_dir, opts.project,
+            opts.include_memory, opts.dry_run, opts.verbose,
+        )
+
+        print()
+        prefix = "DRY RUN: would restore" if opts.dry_run else "Restored"
+        print(f"{prefix} {restored} file(s), {total_bytes} byte(s). "
+              f"Skipped {skipped} already-current. Subdirs: {subdirs}.")
+        return 0
+    finally:
+        for snap in snaps:
+            backend.cleanup(snap)
+
+
 # -------- main --------
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> Options:
     p = argparse.ArgumentParser(
-        description="Restore deleted Claude Code chat transcripts from Time Machine snapshots.",
+        description="Restore deleted Claude Code chat transcripts from "
+                    "Linux filesystem snapshots.",
     )
+    p.add_argument("--backend", default="auto",
+                   choices=["zfs", "btrfs", "timeshift", "auto"],
+                   help="snapshot backend to use (default: auto)")
+    p.add_argument("--list-backends", action="store_true",
+                   help="list available backends and discovered snapshot counts")
     p.add_argument("--dry-run", action="store_true",
                    help="show what would be restored; copy nothing")
     p.add_argument("--project", metavar="NAME",
                    help="limit to one encoded project dir "
-                        "(e.g. -Users-you-projects-foo)")
+                        "(e.g. -home-you-projects-foo)")
     p.add_argument("--include-memory", action="store_true",
                    help="also restore <project>/memory/ subdirs")
     p.add_argument("--verbose", action="store_true",
@@ -371,102 +436,35 @@ def parse_args() -> argparse.Namespace:
                         "(useful for testing against a copy of your real projects)")
 
     # Encoded project names start with '-', which argparse would otherwise
-    # mistake for another flag. Rewrite "--project FOO" -> "--project=FOO"
-    # so users don't have to remember the '=' syntax.
-    argv = sys.argv[1:]
+    # mistake for another flag. Rewrite "--project FOO" -> "--project=FOO".
+    raw = sys.argv[1:] if argv is None else argv
     rewritten: list[str] = []
     i = 0
-    while i < len(argv):
-        if argv[i] == "--project" and i + 1 < len(argv) and argv[i + 1].startswith("-"):
-            rewritten.append(f"--project={argv[i + 1]}")
+    while i < len(raw):
+        if raw[i] == "--project" and i + 1 < len(raw) and raw[i + 1].startswith("-"):
+            rewritten.append(f"--project={raw[i + 1]}")
             i += 2
         else:
-            rewritten.append(argv[i])
+            rewritten.append(raw[i])
             i += 1
-    return p.parse_args(rewritten)
+    ns = p.parse_args(rewritten)
+    return Options(
+        backend=ns.backend,
+        list_backends=ns.list_backends,
+        dry_run=ns.dry_run,
+        project=ns.project,
+        include_memory=ns.include_memory,
+        verbose=ns.verbose,
+        dest=ns.dest,
+    )
 
 
 def main() -> int:
-    if sys.platform != "darwin":
-        die("macOS only.")
-
-    args = parse_args()
-    # getpass.getuser() reads LOGNAME/USER env vars; more reliable than
-    # os.getlogin() in non-TTY contexts (where it can return "root").
-    user = getpass.getuser()
-    claude_dir = args.dest if args.dest else Path.home() / ".claude" / "projects"
-    if args.dest:
-        print(f"Destination override: {claude_dir}")
-
-    device = find_tm_device()
-    print(f"Time Machine volume: /dev/{device}")
-
-    snap_names = list_snapshots(device)
-    if not snap_names:
-        die(f"No APFS snapshots found on /dev/{device}.")
-    print(f"Found {len(snap_names)} snapshots.")
-
-    pre_mounted = existing_mounts()
-    snapshots = [Snapshot(name=n) for n in snap_names]
-
-    # `try/finally` is our trap-replacement. Anything that mounts gets
-    # tracked on the Snapshot object; finally unmounts only what we own.
-    tmp_root: Path | None = None
-    try:
-        for snap in snapshots:
-            if snap.name in pre_mounted:
-                snap.mountpoint = pre_mounted[snap.name]
-                if args.verbose:
-                    print(f"using existing mount: {snap.name} -> {snap.mountpoint}")
-            else:
-                if tmp_root is None:
-                    tmp_root = Path(tempfile.mkdtemp(prefix="tm-claude-restore-"))
-                if args.verbose:
-                    print(f"mounting {snap.name} under {tmp_root}")
-                mount_snapshot(snap, device, tmp_root)
-
-        # Index every mounted snapshot.
-        all_entries: list[JsonlEntry] = []
-        for snap in snapshots:
-            all_entries.extend(index_snapshot(snap, user, args.project, args.verbose))
-
-        if not all_entries:
-            die(f"No Claude JSONL files found in any snapshot for user '{user}'.")
-
-        best = pick_largest(all_entries)
-        print(f"Indexed {len(best)} unique (project, jsonl) pairs across snapshots.")
-
-        restored = 0
-        total_bytes = 0
-        skipped = 0
-        for entry in sorted(best.values(), key=lambda e: (e.project, e.filename)):
-            ok, n = restore_file(entry, claude_dir, args.dry_run, args.verbose)
-            if ok:
-                restored += 1
-                total_bytes += n
-            else:
-                skipped += 1
-
-        subdirs = restore_subdirs(
-            snapshots, user, claude_dir,
-            args.project, args.include_memory,
-            args.dry_run, args.verbose,
-        )
-
-        print()
-        prefix = "DRY RUN: would restore" if args.dry_run else "Restored"
-        print(f"{prefix} {restored} file(s), {total_bytes} byte(s). "
-              f"Skipped {skipped} already-current. Subdirs: {subdirs}.")
-        return 0
-
-    finally:
-        for snap in snapshots:
-            unmount_if_ours(snap)
-        if tmp_root is not None:
-            try:
-                tmp_root.rmdir()
-            except OSError:
-                pass
+    if sys.platform == "darwin":
+        die("This is the Linux port. On macOS use the upstream tool: "
+            "https://github.com/garrettmoss/restore-claude-history")
+    opts = parse_args()
+    return run_restore(default_registry(), opts)
 
 
 if __name__ == "__main__":

@@ -1,195 +1,140 @@
 #!/usr/bin/env python3
 """
-verify_restore.py — end-to-end test for restore_claude_history.py
+verify_restore.py — Layer 2 end-to-end check for restore_claude_history.py
 
-Builds a sandbox from your real ~/.claude/projects/<project>, deletes a few
-files from the sandbox, runs the main script with --dest, then checks that
-the deleted files came back with correct sizes, correct historical mtimes,
-and no inherited TM ACL. Cleans up after itself.
+Ported from upstream's macOS Time Machine verifier to the Linux backend model.
+Builds synthetic "snapshots" as tempdirs via LocalDirBackend (no real ZFS /
+Btrfs / Timeshift needed), simulates a deletion on the live tree, runs the
+restore loop, and asserts each file came back with the LARGEST size, correct
+historical mtime, and no leftover ACL.
 
 Usage:
-    python3 tests/verify_restore.py --project=-Users-you-projects-foo
-    python3 tests/verify_restore.py --project=-Users-you-projects-foo --keep
-
-Requires: a Time Machine drive plugged in with snapshots containing the
-chosen project. Same prereqs as the main script (Full Disk Access etc.).
+    python3 tests/verify_restore.py
+    python3 tests/verify_restore.py --keep   # leave sandbox for inspection
 """
 
 from __future__ import annotations
 
 import argparse
-import datetime as dt
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NoReturn
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-MAIN_SCRIPT = REPO_ROOT / "restore_claude_history.py"
-CLAUDE_DIR = Path.home() / ".claude" / "projects"
-NUM_FILES_TO_TEST = 5
+from backends._local_dir import LocalDirBackend  # noqa: E402
+from restore_claude_history import Options, run_restore  # noqa: E402
+
+PROJECT = "-home-user-projects-demo"
+# name -> (small_size, large_size, mtime). The large version lives in the
+# newer snapshot and must be the one restored.
+FIXTURES = {
+    "session-a.jsonl": (200, 900, 1_600_000_000.0),
+    "session-b.jsonl": (50, 4096, 1_600_100_000.0),
+    "session-c.jsonl": (1024, 8192, 1_600_200_000.0),
+}
 
 
 @dataclass
-class FileFingerprint:
-    path: Path
+class Expect:
+    name: str
     size: int
     mtime: float
 
 
-def fingerprint(path: Path) -> FileFingerprint:
-    st = path.stat()
-    return FileFingerprint(path=path, size=st.st_size, mtime=st.st_mtime)
+def _write(path: Path, size: int, mtime: float) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"x" * size)
+    import os
+    os.utime(path, (mtime, mtime))
 
 
 def has_acl(path: Path) -> bool:
-    """`ls -le` shows a '+' after the permission bits when ACLs are present."""
-    out = subprocess.run(["ls", "-le", str(path)], capture_output=True, text=True).stdout
-    # Lines look like:  -rw-------+ 1 user staff ...
-    # vs (no ACL):      -rw-------  1 user staff ...
-    # vs (xattrs only): -rw-------@ 1 user staff ...
-    m = re.match(r"^\S+", out)
-    return bool(m and "+" in m.group(0))
-
-
-def latest_backup_time() -> float | None:
-    """Return the unix mtime of the most recent TM backup, or None if unknown.
-
-    `tmutil latestbackup` returns a path with the timestamp embedded:
-        /Volumes/.timemachine/<UUID>/2026-04-24-205237.backup/2026-04-24-205237.backup
-    """
-    r = subprocess.run(["tmutil", "latestbackup"], capture_output=True, text=True)
+    """getfacl shows more than the three base entries when an ACL is set."""
+    try:
+        r = subprocess.run(["getfacl", "-c", str(path)],
+                           capture_output=True, text=True)
+    except FileNotFoundError:
+        return False  # getfacl not installed
     if r.returncode != 0:
-        return None
-    m = re.search(r"(\d{4}-\d{2}-\d{2}-\d{6})\.backup", r.stdout)
-    if not m:
-        return None
-    return dt.datetime.strptime(m.group(1), "%Y-%m-%d-%H%M%S").timestamp()
+        return False  # fs without ACL support
+    entries = [ln for ln in r.stdout.splitlines()
+               if ln and not ln.startswith("#")]
+    extra = [ln for ln in entries
+             if not re.match(r"^(user|group|other)::", ln)]
+    return bool(extra)
 
 
-def pick_test_files(project_dir: Path) -> list[FileFingerprint]:
-    """Pick a spread of JSONLs that exist in at least one TM snapshot.
-
-    Filters out files newer than the latest TM backup, since those can't
-    possibly be restored (they don't exist in any snapshot).
-    """
-    cutoff = latest_backup_time()
-    candidates = list(project_dir.glob("*.jsonl"))
-    if cutoff is not None:
-        before = len(candidates)
-        candidates = [p for p in candidates if p.stat().st_mtime <= cutoff]
-        skipped = before - len(candidates)
-        if skipped:
-            print(f"[setup]  skipping {skipped} file(s) newer than latest TM backup")
-    candidates.sort(key=lambda p: p.stat().st_size)
-    if len(candidates) < NUM_FILES_TO_TEST:
-        die(f"Only {len(candidates)} eligible JSONLs; need at least {NUM_FILES_TO_TEST}.")
-    # Pick evenly across the size distribution.
-    step = max(1, len(candidates) // NUM_FILES_TO_TEST)
-    picks = candidates[::step][:NUM_FILES_TO_TEST]
-    return [fingerprint(p) for p in picks]
-
-
-def die(msg: str) -> "NoReturn":  # type: ignore[name-defined]
+def die(msg: str) -> NoReturn:
     print(f"FAIL: {msg}", file=sys.stderr)
     sys.exit(1)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--project", required=True,
-                        help="encoded project dir under ~/.claude/projects "
-                             "(e.g. -Users-you-projects-foo)")
     parser.add_argument("--keep", action="store_true",
-                        help="leave the sandbox in /tmp after the run (for inspection)")
-    # Same dash-eating workaround as the main script.
-    argv = sys.argv[1:]
-    rewritten: list[str] = []
-    i = 0
-    while i < len(argv):
-        if argv[i] == "--project" and i + 1 < len(argv) and argv[i + 1].startswith("-"):
-            rewritten.append(f"--project={argv[i + 1]}")
-            i += 2
-        else:
-            rewritten.append(argv[i])
-            i += 1
-    args = parser.parse_args(rewritten)
+                        help="leave the sandbox in /tmp after the run")
+    args = parser.parse_args()
 
-    real_project = CLAUDE_DIR / args.project
-    if not real_project.is_dir():
-        die(f"No such project on disk: {real_project}")
+    sandbox = Path(tempfile.mkdtemp(prefix="claude-restore-verify-"))
+    print(f"[setup]  sandbox: {sandbox}")
 
-    # Set up sandbox.
-    sandbox_root = Path(tempfile.mkdtemp(prefix="claude-restore-verify-"))
-    sandbox_project = sandbox_root / args.project
-    print(f"[setup]  sandbox: {sandbox_project}")
-    shutil.copytree(real_project, sandbox_project)
+    # Two snapshots: an older one with small files, a newer one with the large
+    # (most complete) versions carrying the historical mtimes we expect back.
+    old_snap = sandbox / "snap-old"
+    new_snap = sandbox / "snap-new"
+    expects: list[Expect] = []
+    for name, (small, large, mtime) in FIXTURES.items():
+        _write(old_snap / ".claude" / "projects" / PROJECT / name, small, mtime - 10)
+        _write(new_snap / ".claude" / "projects" / PROJECT / name, large, mtime)
+        expects.append(Expect(name=name, size=large, mtime=mtime))
+    print(f"[setup]  built {len(expects)} files across 2 snapshots")
 
-    # Pick + delete test files. Capture fingerprints from the REAL files
-    # (sandbox copies have today's mtime because cp doesn't preserve it).
-    real_picks = pick_test_files(real_project)
-    print(f"[setup]  picked {len(real_picks)} files to delete + restore:")
-    for fp in real_picks:
-        print(f"           {fp.size:>10} bytes  mtime={fp.mtime}  {fp.path.name}")
-        (sandbox_project / fp.path.name).unlink()
+    # Live tree: files are missing (the deletion we're recovering from).
+    dest = sandbox / "live"
+    (dest / PROJECT).mkdir(parents=True)
 
-    # Run main script against sandbox.
-    print(f"[run]    {MAIN_SCRIPT} --dest {sandbox_root} --project={args.project}")
-    result = subprocess.run(
-        [str(MAIN_SCRIPT), "--dest", str(sandbox_root),
-         f"--project={args.project}"],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        print(result.stdout)
-        print(result.stderr, file=sys.stderr)
-        die(f"restore script exited {result.returncode}")
-    # Surface the last line of output (the summary).
-    summary = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
-    print(f"[run]    {summary}")
+    registry = [LocalDirBackend("local", roots=[old_snap, new_snap])]
+    print("[run]    run_restore(--backend auto)")
+    rc = run_restore(registry, Options(backend="auto", dest=dest))
+    if rc != 0:
+        die(f"restore returned {rc}")
 
-    # Verify.
     failures: list[str] = []
-    for original in real_picks:
-        restored = sandbox_project / original.path.name
+    for exp in expects:
+        restored = dest / PROJECT / exp.name
         if not restored.exists():
             failures.append(f"missing: {restored}")
             continue
-        rst = restored.stat()
-        if rst.st_size != original.size:
-            failures.append(
-                f"size mismatch on {restored.name}: "
-                f"got {rst.st_size}, want {original.size}"
-            )
-        if abs(rst.st_mtime - original.mtime) > 1.0:
-            failures.append(
-                f"mtime drift on {restored.name}: "
-                f"got {rst.st_mtime}, want {original.mtime} "
-                f"(diff {rst.st_mtime - original.mtime:.1f}s)"
-            )
+        st = restored.stat()
+        if st.st_size != exp.size:
+            failures.append(f"size mismatch on {exp.name}: got {st.st_size}, "
+                            f"want {exp.size}")
+        if abs(st.st_mtime - exp.mtime) > 1.0:
+            failures.append(f"mtime drift on {exp.name}: got {st.st_mtime}, "
+                            f"want {exp.mtime}")
         if has_acl(restored):
-            failures.append(f"ACL still present on {restored.name}")
+            failures.append(f"ACL still present on {exp.name}")
 
-    # Clean up unless --keep.
     if args.keep:
-        print(f"[keep]   sandbox left at {sandbox_root}")
+        print(f"[keep]   sandbox left at {sandbox}")
     else:
-        shutil.rmtree(sandbox_root, ignore_errors=True)
-        print(f"[clean]  removed {sandbox_root}")
+        import shutil
+        shutil.rmtree(sandbox, ignore_errors=True)
+        print(f"[clean]  removed {sandbox}")
 
     if failures:
-        print()
-        print("FAIL:")
+        print("\nFAIL:")
         for f in failures:
             print(f"  - {f}")
         return 1
 
-    print()
-    print(f"PASS: {len(real_picks)} files restored with correct size, mtime, no ACL.")
+    print(f"\nPASS: {len(expects)} files restored with largest size, correct "
+          f"mtime, no ACL.")
     return 0
 
 

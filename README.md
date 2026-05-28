@@ -1,6 +1,24 @@
-# restore-claude-history
+# restore-claude-history-linux
 
-Recover deleted Claude Code chat transcripts from macOS Time Machine snapshots.
+Recover deleted Claude Code chat transcripts from Linux filesystem snapshots.
+
+> **Linux port — v1 in progress.** This is the Linux fork of
+> [`garrettmoss/restore-claude-history`](https://github.com/garrettmoss/restore-claude-history)
+> (macOS Time Machine). The recovery logic is unchanged; the macOS
+> snapshot-discovery layer is replaced by pluggable backends. **Phase 1 ships
+> the backend abstraction + the ZFS backend.** Btrfs and Timeshift follow; see
+> [`docs/directives/rcb-v1-directive-2026-05-28.md`](docs/directives/rcb-v1-directive-2026-05-28.md)
+> and [`docs/backends.md`](docs/backends.md). The macOS sections below are
+> retained from upstream pending the Phase 4 README rewrite.
+>
+> Linux usage today:
+> ```bash
+> python3 restore_claude_history.py --list-backends          # what's available
+> python3 restore_claude_history.py --backend zfs --dry-run   # preview
+> python3 restore_claude_history.py --backend zfs             # restore
+> ```
+> `--backend auto` (the default) selects the sole backend that finds snapshots,
+> and fails loud asking for an explicit `--backend` if several do.
 
 ## Background
 
