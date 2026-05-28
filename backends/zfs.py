@@ -14,23 +14,11 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from backends._mountinfo import mounts_of_fstype
 from backends.base import DiscoveredSnapshot, SnapshotBackend
 
 # Mountpoint values that are not real on-disk paths.
 _NON_PATH_MOUNTPOINTS = {"none", "legacy", "-"}
-
-
-def _unescape_mountinfo(field: str) -> str:
-    """Decode the octal escapes util-linux writes into /proc/self/mountinfo.
-
-    Spaces, tabs, newlines, and backslashes in a path are encoded as \\040,
-    \\011, \\012, \\134. Backslash is decoded last so the others aren't
-    re-interpreted.
-    """
-    return (field.replace("\\040", " ")
-                 .replace("\\011", "\t")
-                 .replace("\\012", "\n")
-                 .replace("\\134", "\\"))
 
 
 def _zfs(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -71,27 +59,9 @@ class ZfsBackend(SnapshotBackend):
         This is the source of truth for ``mountpoint=legacy`` datasets (mounted
         via fstab/manually, so the ZFS property is "legacy" but the snapshot is
         reachable under the real mount). For property-mounted datasets it agrees
-        with the property.
+        with the property. For ZFS, mountinfo's mount source is the dataset name.
         """
-        out: dict[str, str] = {}
-        try:
-            text = Path("/proc/self/mountinfo").read_text()
-        except OSError:
-            return out
-        for line in text.splitlines():
-            # mountinfo: <id> <parent> <maj:min> <root> <mountpoint> ... - <fstype> <source> <opts>
-            sep = line.find(" - ")
-            if sep == -1:
-                continue
-            pre = line[:sep].split()
-            post = line[sep + 3:].split()
-            if len(pre) < 5 or len(post) < 2:
-                continue
-            fstype, source = post[0], post[1]
-            if fstype != "zfs":
-                continue
-            out[_unescape_mountinfo(source)] = _unescape_mountinfo(pre[4])
-        return out
+        return {m.source: m.mountpoint for m in mounts_of_fstype("zfs")}
 
     def discover(self) -> list[DiscoveredSnapshot]:
         prop_mounts = self._property_mountpoints()

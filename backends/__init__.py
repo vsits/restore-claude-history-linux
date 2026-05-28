@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from backends.base import DiscoveredSnapshot, SnapshotBackend
+from backends.btrfs import BtrfsBackend
 from backends.zfs import ZfsBackend
 
 __all__ = [
     "DiscoveredSnapshot",
     "SnapshotBackend",
     "ZfsBackend",
+    "BtrfsBackend",
     "default_registry",
 ]
 
@@ -16,7 +18,7 @@ __all__ = [
 def default_registry() -> list[SnapshotBackend]:
     """Backends wired into production runs.
 
-    Phase 1 ships ZFS only. Btrfs (Phase 2) and Timeshift (Phase 3) append
-    here as they land. The test-only LocalDirBackend is never registered.
+    Phases 1-2 ship ZFS + Btrfs. Timeshift (Phase 3) appends here as it lands.
+    The test-only LocalDirBackend is never registered.
     """
-    return [ZfsBackend()]
+    return [ZfsBackend(), BtrfsBackend()]

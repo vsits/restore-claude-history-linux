@@ -92,28 +92,6 @@ def test_discover_resolves_legacy_via_live_mount(monkeypatch):
     assert [str(s.data_root) for s in snaps] == ["/home/.zfs/snapshot/s"]
 
 
-def test_live_mountpoints_parses_mountinfo(monkeypatch, tmp_path):
-    mountinfo = (
-        "24 30 0:22 / /proc rw,nosuid - proc proc rw\n"
-        "55 30 0:50 / /home rw - zfs tank/home rw\n"
-        "56 30 0:51 / /data rw,relatime - zfs tank/data rw\n"
-        "60 30 8:1 / /boot rw - ext4 /dev/sda1 rw\n"
-    )
-    mi = tmp_path / "mountinfo"
-    mi.write_text(mountinfo)
-    monkeypatch.setattr(zfs_mod.Path, "read_text", lambda self: mountinfo)
-    out = ZfsBackend()._live_mountpoints()
-    assert out == {"tank/home": "/home", "tank/data": "/data"}
-
-
-def test_live_mountpoints_unescapes_octal(monkeypatch):
-    # mountinfo encodes spaces as \040 etc.; they must be decoded.
-    mountinfo = "55 30 0:50 / /media/Storage\\040Pool/home rw - zfs tank/home rw\n"
-    monkeypatch.setattr(zfs_mod.Path, "read_text", lambda self: mountinfo)
-    out = ZfsBackend()._live_mountpoints()
-    assert out == {"tank/home": "/media/Storage Pool/home"}
-
-
 def test_discover_empty_when_zfs_fails(monkeypatch):
     _no_live_mounts(monkeypatch)
     monkeypatch.setattr(zfs_mod, "_zfs", lambda args: _cp(returncode=1))
