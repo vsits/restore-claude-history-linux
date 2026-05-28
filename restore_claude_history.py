@@ -388,6 +388,12 @@ def parse_args() -> argparse.Namespace:
                         "(external Time Machine drive), or 'both' (default — "
                         "uses whichever is available, prefers newest first "
                         "across pools)")
+    p.add_argument("--list-only", action="store_true",
+                   help="don't restore anything; just list one tab-separated "
+                        "row per (project, filename) pair found in snapshots "
+                        "(kind, snapshot_name, project, filename, size). "
+                        "Honors --source and --project. Useful for previewing "
+                        "what's recoverable, and for test tooling.")
 
     # Encoded project names start with '-', which argparse would otherwise
     # mistake for another flag. Rewrite "--project FOO" -> "--project=FOO"
@@ -414,8 +420,12 @@ def main() -> int:
     # os.getlogin() in non-TTY contexts (where it can return "root").
     user = getpass.getuser()
     claude_dir = args.dest if args.dest else Path.home() / ".claude" / "projects"
+    # Route status/progress to stderr in --list-only mode so stdout stays
+    # purely machine-readable rows. Otherwise to stdout, matching prior
+    # behavior.
+    status = sys.stderr if args.list_only else sys.stdout
     if args.dest:
-        print(f"Destination override: {claude_dir}")
+        print(f"Destination override: {claude_dir}", file=status)
 
     # Collect snapshots from one or both sources per --source.
     # `tm` = external TM drive (deep history, but Spotlight-noisy and
@@ -431,10 +441,12 @@ def main() -> int:
             if args.source == "tm":
                 die("No Time Machine APFS volume detected. Plug in your TM drive and try again.")
             if args.verbose:
-                print("no Time Machine drive detected; continuing with local snapshots only")
+                print("no Time Machine drive detected; continuing with local snapshots only",
+                      file=status)
         else:
             tm_names = list_snapshots(tm_device)
-            print(f"Time Machine volume: /dev/{tm_device} ({len(tm_names)} snapshot(s))")
+            print(f"Time Machine volume: /dev/{tm_device} ({len(tm_names)} snapshot(s))",
+                  file=status)
             snapshots.extend(
                 Snapshot(name=n, device=tm_device, kind="tm") for n in tm_names
             )
@@ -445,10 +457,12 @@ def main() -> int:
             if args.source == "local":
                 die("Could not locate the internal APFS Data volume (/System/Volumes/Data).")
             if args.verbose:
-                print("no internal Data volume located; skipping local snapshots")
+                print("no internal Data volume located; skipping local snapshots",
+                      file=status)
         else:
             local_names = list_snapshots(local_device)
-            print(f"Local Data volume:    /dev/{local_device} ({len(local_names)} snapshot(s))")
+            print(f"Local Data volume:    /dev/{local_device} ({len(local_names)} snapshot(s))",
+                  file=status)
             snapshots.extend(
                 Snapshot(name=n, device=local_device, kind="local") for n in local_names
             )
@@ -471,7 +485,21 @@ def main() -> int:
     #      subdirs (subagents/, memory/), matching the prior all-at-end
     #      behavior.
     snapshots.sort(key=lambda s: s.name, reverse=True)
-    print(f"Found {len(snapshots)} snapshot(s) total across requested sources.")
+
+    # Surface the date range of the available snapshots — gives users a
+    # "how stale is my safety net?" read at a glance. Snapshot names embed
+    # YYYY-MM-DD-HHMMSS, so we can pull dates from the sorted list directly.
+    def _snap_date(name: str) -> str:
+        m = re.search(r"(\d{4}-\d{2}-\d{2})-\d{6}", name)
+        return m.group(1) if m else "?"
+    newest_date = _snap_date(snapshots[0].name)
+    oldest_date = _snap_date(snapshots[-1].name)
+    if newest_date == oldest_date:
+        span = newest_date
+    else:
+        span = f"{oldest_date} → {newest_date}"
+    print(f"Snapshots span: {span} ({len(snapshots)} total across requested sources)",
+          file=status)
 
     pre_mounted = existing_mounts()
 
@@ -495,13 +523,14 @@ def main() -> int:
                 if tmp_root is None:
                     tmp_root = Path(tempfile.mkdtemp(prefix="tm-claude-restore-"))
                 if args.verbose:
-                    print(f"mounting {snap.name} under {tmp_root}")
+                    print(f"mounting {snap.name} under {tmp_root}", file=status)
                 if not mount_snapshot(snap, tmp_root):
                     continue
             else:
                 snap.mountpoint = pre_mounted[snap.name]
                 if args.verbose:
-                    print(f"using existing mount: {snap.name} -> {snap.mountpoint}")
+                    print(f"using existing mount: {snap.name} -> {snap.mountpoint}",
+                          file=status)
 
             try:
                 entries = index_snapshot(snap, user, args.project, args.verbose)
@@ -511,22 +540,40 @@ def main() -> int:
                         continue
                     seen.add(key)
                     indexed_pairs += 1
+                    if args.list_only:
+                        # Tab-separated: kind, snapshot, project, filename,
+                        # size, mtime (float epoch seconds). Stable
+                        # machine-readable surface for callers (test
+                        # harness, user previews). Status lines go to
+                        # stderr in list-only mode, so stdout stays clean.
+                        try:
+                            mtime = entry.src.stat().st_mtime
+                        except OSError:
+                            mtime = 0.0
+                        print(f"{snap.kind}\t{snap.name}\t{entry.project}\t"
+                              f"{entry.filename}\t{entry.size}\t{mtime}")
+                        continue
                     ok, n = restore_file(entry, claude_dir, args.dry_run, args.verbose)
                     if ok:
                         restored += 1
                         total_bytes += n
                     else:
                         skipped += 1
-                subdirs += restore_subdirs_from_snapshot(
-                    snap, user, claude_dir,
-                    args.project, args.include_memory,
-                    args.dry_run, args.verbose,
-                )
+                if not args.list_only:
+                    subdirs += restore_subdirs_from_snapshot(
+                        snap, user, claude_dir,
+                        args.project, args.include_memory,
+                        args.dry_run, args.verbose,
+                    )
             finally:
                 unmount_if_ours(snap)
 
         if indexed_pairs == 0:
             die(f"No Claude JSONL files found in any snapshot for user '{user}'.")
+
+        if args.list_only:
+            # No summary line — keep stdout pure machine-readable.
+            return 0
 
         print(f"Indexed {indexed_pairs} unique (project, jsonl) pairs across snapshots.")
         print()

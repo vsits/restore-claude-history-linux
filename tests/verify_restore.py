@@ -18,7 +18,6 @@ chosen project. Same prereqs as the main script (Full Disk Access etc.).
 from __future__ import annotations
 
 import argparse
-import datetime as dt
 import re
 import shutil
 import subprocess
@@ -56,42 +55,74 @@ def has_acl(path: Path) -> bool:
     return bool(m and "+" in m.group(0))
 
 
-def latest_backup_time() -> float | None:
-    """Return the unix mtime of the most recent TM backup, or None if unknown.
+def list_recoverable(project: str, source: str) -> dict[str, tuple[int, float]]:
+    """Ask the main script which JSONL filenames are present in available
+    snapshots, scoped to one project. Returns {filename: (size, mtime)}
+    for the largest version seen across all available snapshots.
 
-    `tmutil latestbackup` returns a path with the timestamp embedded:
-        /Volumes/.timemachine/<UUID>/2026-04-24-205237.backup/2026-04-24-205237.backup
+    Uses --list-only, which emits tab-separated rows to stdout:
+        kind \\t snapshot_name \\t project \\t filename \\t size \\t mtime
+    Status text goes to stderr there, so stdout is parse-clean.
+
+    Newest-first traversal means the largest (size, mtime) for a given
+    filename appears in the first row for it. We still pick the max
+    defensively in case ordering ever changes.
     """
-    r = subprocess.run(["tmutil", "latestbackup"], capture_output=True, text=True)
-    if r.returncode != 0:
-        return None
-    m = re.search(r"(\d{4}-\d{2}-\d{2}-\d{6})\.backup", r.stdout)
-    if not m:
-        return None
-    return dt.datetime.strptime(m.group(1), "%Y-%m-%d-%H%M%S").timestamp()
+    result = subprocess.run(
+        [str(MAIN_SCRIPT), "--list-only",
+         f"--source={source}", f"--project={project}"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print(result.stderr, file=sys.stderr)
+        die(f"--list-only exited {result.returncode}")
+    largest: dict[str, tuple[int, float]] = {}
+    for line in result.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 6 and parts[2] == project:
+            filename = parts[3]
+            try:
+                size = int(parts[4])
+                mtime = float(parts[5])
+            except ValueError:
+                continue
+            cur = largest.get(filename)
+            if cur is None or size > cur[0]:
+                largest[filename] = (size, mtime)
+    return largest
 
 
-def pick_test_files(project_dir: Path) -> list[FileFingerprint]:
-    """Pick a spread of JSONLs that exist in at least one TM snapshot.
+def pick_test_files(project_dir: Path, available: dict[str, tuple[int, float]]) -> list[FileFingerprint]:
+    """Pick a spread of JSONLs that both exist on-disk AND appear in at
+    least one snapshot the upcoming restore will see.
 
-    Filters out files newer than the latest TM backup, since those can't
-    possibly be restored (they don't exist in any snapshot).
+    Fingerprints carry the SNAPSHOT size and mtime (from --list-only),
+    not the live on-disk values. JSONLs are append-only, so a snapshot's
+    copy of a file can be smaller than the live one — and that's the
+    size we'll get back when we restore. Same logic for mtime: the
+    snapshot has the original mtime, which is what mtime preservation
+    should reproduce.
+
+    Without the snapshot-intersection step, the test can pick files that
+    don't exist in any available snapshot (common with --source=local,
+    where the snapshot may be weeks old and miss recently-created files),
+    leading to "restored 0" results that look like a code bug but aren't.
     """
-    cutoff = latest_backup_time()
-    candidates = list(project_dir.glob("*.jsonl"))
-    if cutoff is not None:
-        before = len(candidates)
-        candidates = [p for p in candidates if p.stat().st_mtime <= cutoff]
-        skipped = before - len(candidates)
-        if skipped:
-            print(f"[setup]  skipping {skipped} file(s) newer than latest TM backup")
-    candidates.sort(key=lambda p: p.stat().st_size)
+    on_disk = list(project_dir.glob("*.jsonl"))
+    before = len(on_disk)
+    candidates = [p for p in on_disk if p.name in available]
+    skipped = before - len(candidates)
+    if skipped:
+        print(f"[setup]  skipping {skipped} on-disk file(s) not present in available snapshots")
+    candidates.sort(key=lambda p: available[p.name][0])
     if len(candidates) < NUM_FILES_TO_TEST:
-        die(f"Only {len(candidates)} eligible JSONLs; need at least {NUM_FILES_TO_TEST}.")
-    # Pick evenly across the size distribution.
+        die(f"Only {len(candidates)} JSONLs are both on-disk and in a snapshot; "
+            f"need at least {NUM_FILES_TO_TEST}.")
+    # Pick evenly across the snapshot-size distribution.
     step = max(1, len(candidates) // NUM_FILES_TO_TEST)
     picks = candidates[::step][:NUM_FILES_TO_TEST]
-    return [fingerprint(p) for p in picks]
+    return [FileFingerprint(path=p, size=available[p.name][0], mtime=available[p.name][1])
+            for p in picks]
 
 
 def die(msg: str) -> "NoReturn":  # type: ignore[name-defined]
@@ -104,6 +135,9 @@ def main() -> int:
     parser.add_argument("--project", required=True,
                         help="encoded project dir under ~/.claude/projects "
                              "(e.g. -Users-you-projects-foo)")
+    parser.add_argument("--source", choices=["local", "tm", "both"], default="both",
+                        help="snapshot pool to exercise (matches the main "
+                             "script's --source flag). Default 'both'.")
     parser.add_argument("--keep", action="store_true",
                         help="leave the sandbox in /tmp after the run (for inspection)")
     # Same dash-eating workaround as the main script.
@@ -129,19 +163,25 @@ def main() -> int:
     print(f"[setup]  sandbox: {sandbox_project}")
     shutil.copytree(real_project, sandbox_project)
 
+    # Ask the main script what's actually present in the requested
+    # snapshot source(s) for this project, so we don't pick files that
+    # can't possibly be restored (e.g., created after the snapshot).
+    available = list_recoverable(args.project, args.source)
+    print(f"[setup]  {len(available)} file(s) available in --source={args.source} snapshots")
+
     # Pick + delete test files. Capture fingerprints from the REAL files
     # (sandbox copies have today's mtime because cp doesn't preserve it).
-    real_picks = pick_test_files(real_project)
+    real_picks = pick_test_files(real_project, available)
     print(f"[setup]  picked {len(real_picks)} files to delete + restore:")
     for fp in real_picks:
         print(f"           {fp.size:>10} bytes  mtime={fp.mtime}  {fp.path.name}")
         (sandbox_project / fp.path.name).unlink()
 
     # Run main script against sandbox.
-    print(f"[run]    {MAIN_SCRIPT} --dest {sandbox_root} --project={args.project}")
+    print(f"[run]    {MAIN_SCRIPT} --dest {sandbox_root} --project={args.project} --source={args.source}")
     result = subprocess.run(
         [str(MAIN_SCRIPT), "--dest", str(sandbox_root),
-         f"--project={args.project}"],
+         f"--project={args.project}", f"--source={args.source}"],
         capture_output=True, text=True,
     )
     if result.returncode != 0:
@@ -153,6 +193,16 @@ def main() -> int:
     print(f"[run]    {summary}")
 
     # Verify.
+    # - size: must match the SNAPSHOT size (fingerprint.size, from
+    #   --list-only). Live size may be larger if the file has grown
+    #   since the snapshot, but we can only restore what's in the snapshot.
+    # - mtime: must match the SNAPSHOT mtime (fingerprint.mtime, from
+    #   --list-only) within 1s. This is THE load-bearing check — the
+    #   whole script exists to avoid mtime being rewritten to "now"
+    #   (see CLAUDE.md). Stamp it on the wrong value and Claude Code's
+    #   cleanup deletes it again, which is the very bug we're working
+    #   around.
+    # - ACL: must not be present.
     failures: list[str] = []
     for original in real_picks:
         restored = sandbox_project / original.path.name
@@ -163,12 +213,12 @@ def main() -> int:
         if rst.st_size != original.size:
             failures.append(
                 f"size mismatch on {restored.name}: "
-                f"got {rst.st_size}, want {original.size}"
+                f"got {rst.st_size}, want {original.size} (snapshot size)"
             )
         if abs(rst.st_mtime - original.mtime) > 1.0:
             failures.append(
                 f"mtime drift on {restored.name}: "
-                f"got {rst.st_mtime}, want {original.mtime} "
+                f"got {rst.st_mtime}, want {original.mtime} (snapshot mtime) "
                 f"(diff {rst.st_mtime - original.mtime:.1f}s)"
             )
         if has_acl(restored):
