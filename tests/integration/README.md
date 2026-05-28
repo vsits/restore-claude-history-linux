@@ -43,8 +43,34 @@ takes a snapshot with `zfs snapshot`, deletes the live file, then asserts
 `ZfsBackend.discover()` finds the snapshot and the restore loop recovers the
 file from `<mountpoint>/.zfs/snapshot/<name>/`.
 
-## Btrfs / Timeshift
+## Btrfs — `test_btrfs_real.py`
 
-`test_btrfs_real.py` (Phase 2) and `test_timeshift_real.py` (Phase 3) land with
-their backends. Document per-distro quirks (mount options, snapshot layout)
+Requires a writable Btrfs mountpoint and permission to create/delete
+subvolumes + snapshots (normally root).
+
+```bash
+# One-time: create a file-backed test Btrfs filesystem (root).
+truncate -s 512M /tmp/rcb-btrfs.img
+mkfs.btrfs /tmp/rcb-btrfs.img
+sudo mkdir -p /mnt/rcbbtrfs
+sudo mount -o loop /tmp/rcb-btrfs.img /mnt/rcbbtrfs
+sudo chown "$USER" /mnt/rcbbtrfs
+
+export RCB_BTRFS_TEST_MOUNT=/mnt/rcbbtrfs
+sudo -E pytest tests/integration/test_btrfs_real.py -v   # subvolume ops need root
+
+# Teardown.
+sudo umount /mnt/rcbbtrfs && rm -f /tmp/rcb-btrfs.img
+```
+
+The test creates a subvolume with a marker file, takes a read-only snapshot,
+then asserts `BtrfsBackend.discover()` surfaces a snapshot whose `data_root`
+contains the marker. `discover()` resolves each `btrfs subvolume list -s` path
+(relative to the fs root subvolume) against the live mounts of that filesystem;
+snapshots not reachable from any current mount are skipped. Document per-distro
+layout quirks (openSUSE `@/.snapshots`, mount options like `nosuid,nodev,ro`)
 here as they are discovered.
+
+## Timeshift
+
+`test_timeshift_real.py` (Phase 3) lands with its backend.

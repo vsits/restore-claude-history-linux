@@ -11,8 +11,19 @@ to know about each other.
 | Backend | Module | Tooling | Mount model |
 |---|---|---|---|
 | ZFS | `backends/zfs.py` | `zfs list -t snapshot` | auto-mounted at `<mountpoint>/.zfs/snapshot/<name>/` (`needs_mount=False`) |
-| Btrfs | `backends/btrfs.py` (Phase 2) | `btrfs subvolume list -s` | read-only subvolumes |
+| Btrfs | `backends/btrfs.py` | `btrfs subvolume list -s` | read-only subvolumes, resolved against live mounts (`needs_mount=False`) |
 | Timeshift | `backends/timeshift.py` (Phase 3) | `/etc/timeshift/timeshift.json` + dir scan | `/timeshift/snapshots/<ts>/` |
+
+Both ZFS and Btrfs read the live mount table via `backends/_mountinfo.py`
+(`mounts_of_fstype`), which handles util-linux octal-escape decoding once for
+all backends.
+
+The Btrfs adapter reports paths from `btrfs subvolume list -s` (relative to the
+filesystem root subvolume) and resolves each against the live mounts of that
+filesystem; a snapshot reachable from no current mount is skipped. It does no
+cross-backend overlap handling — in Phase 2, with Timeshift not yet registered,
+nothing is pruned (a Timeshift-on-Btrfs host sees the raw Btrfs inventory until
+Phase 3 wires the orchestrator's overlap pass).
 
 ## Future-work backends (documented, not yet implemented)
 
