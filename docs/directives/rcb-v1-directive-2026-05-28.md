@@ -1,10 +1,21 @@
 # RCB v1 Directive — Linux Port of restore-claude-history
 
 **Date:** 2026-05-28
+**Version:** v2 (revised after Codex Round 1)
 **Author:** AI Team Lead
 **Implementer:** vsits-restore-claude-builder (RCB)
 **Reviewer:** Codex Review Agent
 **Approval gate:** Chris (AI Team Lead drafts → Chris approves directive transitions)
+
+## Revision log
+
+- **v1 (2026-05-28):** initial directive
+- **v2 (2026-05-28):** Codex Round 1 addressed —
+  - Finding 1 (HIGH): `--backend auto` fails on ambiguity, requires explicit `--backend` when multiple backends find candidates. Timeshift-on-Btrfs assigned to `timeshift` backend; `btrfs` skips Timeshift-managed paths.
+  - Finding 2 (MED): three-layer test strategy replaces single Docker-fixture approach.
+  - Finding 3 (MED): Phase 1 includes ZFS as the first real backend wired end-to-end.
+  - Finding 4 (LOW): v1.1 backend stubs removed from file layout; future backends documented in directive + backend-authoring docs only.
+  - Finding 5 (LOW): AGENTS.md gets distinct `--approve` / `--request-changes` / `--comment` examples; bot name reference corrected.
 
 ## Goal
 
@@ -24,13 +35,17 @@ Origin discussion: [anthropics/claude-code#62272](https://github.com/anthropics/
 2. **Btrfs** — `btrfs subvolume list -s <mountpoint>`; snapshots are read-only subvolumes. Default on openSUSE, optional on Ubuntu/Debian.
 3. **Timeshift** — `/etc/timeshift/timeshift.json` config + dir scan; snapshots at `/timeshift/snapshots/<ts>/`. Ubuntu's default backup tool.
 
-**Stubbed in v1, implemented in v1.1 (each as a plug-in module):**
+**Future backends (documented in directive + `docs/backends.md` only, no code stubs):**
 - LVM-thin
 - Snapper (openSUSE / Ubuntu)
 - borg (requires `borg mount` FUSE)
 - restic (requires `restic mount` FUSE)
 
-**CLI compatibility goal:** all upstream flags work identically. Add one new flag: `--backend <name>` to force a specific backend; default behavior is "try auto-discovery, prefer first that finds snapshots."
+These are tracked in the directive so the abstraction stays mindful of their constraints; they get a code module only when actually implemented.
+
+## CLI surface
+
+All upstream flags work identically. Two new flags:
 
 | Upstream flag | This fork |
 |---|---|
@@ -40,7 +55,30 @@ Origin discussion: [anthropics/claude-code#62272](https://github.com/anthropics/
 | `--verbose` | unchanged |
 | `--dest DIR` | unchanged |
 | — | `--backend {zfs,btrfs,timeshift,auto}` (new; default `auto`) |
-| — | `--list-backends` (new; prints available backends + status) |
+| — | `--list-backends` (new; prints available backends + discovered-snapshot counts) |
+
+### `--backend auto` semantics (revised after Codex Round 1)
+
+`auto` is the default. The orchestrator runs `discover()` on every implemented backend whose `is_available()` returns True, then chooses according to:
+
+1. **Zero backends find any candidates** → exit with "no snapshots found on any backend" error, suggesting the user check `--list-backends` and verify their snapshot tool is installed.
+2. **Exactly one backend finds candidates** → use that backend; log which one was selected at INFO level.
+3. **Multiple backends find candidates** → exit with ambiguity error listing each matching backend, its discovered snapshot count, and example snapshot root paths. The error message tells the user to re-run with `--backend <name>` to disambiguate.
+
+The "first match wins" behavior is explicitly rejected because backend scopes overlap on real systems (notably Timeshift on Btrfs; future Snapper-on-Btrfs).
+
+### Backend-overlap resolution rules
+
+When the same physical snapshots are visible to multiple backends, the directive assigns ownership to avoid double-counting in `discover()`:
+
+| Snapshot source | Owner backend | Why |
+|---|---|---|
+| Timeshift-on-Btrfs (Timeshift configured with Btrfs subvolume snapshots) | `timeshift` | Timeshift's config is the source of truth; `btrfs` backend skips paths under `/timeshift/snapshots/` |
+| Snapper-on-Btrfs (when Snapper v1.1 lands) | `snapper` | Snapper's config is source of truth; `btrfs` backend skips paths under `/.snapshots/` |
+| Bare Btrfs subvolumes (no Timeshift/Snapper management) | `btrfs` | No higher-layer config exists |
+| Bare ZFS snapshots | `zfs` | No overlap with other v1 backends |
+
+Each backend's `discover()` implementation is responsible for skipping paths claimed by a higher-layer backend, even if the higher-layer backend isn't implemented yet (so v1's `btrfs.discover()` knows to skip Timeshift paths). This keeps the ambiguity-error case ("multiple backends find candidates") rare in practice while preserving fail-loud semantics when it does happen.
 
 ## File layout
 
@@ -52,28 +90,31 @@ Origin discussion: [anthropics/claude-code#62272](https://github.com/anthropics/
 ├── restore_claude_history.py        # orchestrator (kept; backends imported)
 ├── backends/
 │   ├── __init__.py
-│   ├── base.py                      # SnapshotBackend ABC
-│   ├── zfs.py                       # ZFS adapter
-│   ├── btrfs.py                     # Btrfs adapter
-│   ├── timeshift.py                 # Timeshift adapter
-│   ├── lvm_thin.py                  # v1.1 stub (NotImplementedError)
-│   ├── snapper.py                   # v1.1 stub
-│   ├── borg.py                      # v1.1 stub
-│   └── restic.py                    # v1.1 stub
+│   ├── base.py                      # SnapshotBackend ABC + DiscoveredSnapshot
+│   ├── _local_dir.py                # LocalDirBackend — test-only fake (used by tempdir-based tests)
+│   ├── zfs.py                       # ZFS adapter (Phase 1)
+│   ├── btrfs.py                     # Btrfs adapter (Phase 2)
+│   └── timeshift.py                 # Timeshift adapter (Phase 3)
 ├── tests/
-│   ├── verify_restore.py            # port of upstream test (fixtures use fake backend)
-│   ├── test_pick_largest.py         # pure-logic unit tests (porting-validation)
-│   ├── test_backend_zfs.py          # backend-specific tests (Docker fixture)
-│   ├── test_backend_btrfs.py
-│   └── test_backend_timeshift.py
+│   ├── test_pick_largest.py         # Layer 1: in-process logic tests
+│   ├── test_orchestrator.py         # Layer 1: ambiguity + auto-selection tests using LocalDirBackend
+│   ├── test_restore_loop.py         # Layer 2: tempdir-based restore tests using LocalDirBackend
+│   ├── verify_restore.py            # Layer 2 end-to-end (ported from upstream, uses LocalDirBackend)
+│   ├── integration/                 # Layer 3: privileged/manual tests (opt-in; not in default test run)
+│   │   ├── README.md                # how to run integration tests on a real host
+│   │   ├── test_zfs_real.py         # requires real ZFS pool with snapshots
+│   │   ├── test_btrfs_real.py       # requires real Btrfs filesystem
+│   │   └── test_timeshift_real.py   # requires Timeshift install + snapshot
 ├── docs/
 │   ├── directives/
 │   │   └── rcb-v1-directive-2026-05-28.md   # this file
-│   └── backends.md                  # how to add a new backend
+│   └── backends.md                  # how to add a new backend; lists future-work backends
 └── NOTES.md                         # historical context (port-relevant parts kept; macOS-only sections dropped)
 ```
 
 ## SnapshotBackend interface (`backends/base.py`)
+
+Unchanged from v1 directive — the ABC shape held up under Codex review:
 
 ```python
 from abc import ABC, abstractmethod
@@ -106,11 +147,15 @@ class SnapshotBackend(ABC):
     def discover(self) -> list[DiscoveredSnapshot]:
         """Find all snapshots this backend can reach.
 
+        Implementations MUST skip paths owned by higher-layer backends per
+        the directive's overlap-resolution rules, even when the higher-layer
+        backend is not yet implemented.
+
         For snapshot mechanisms where snapshots are auto-mounted (ZFS),
         return them with needs_mount=False. For mechanisms requiring
-        explicit mount (FUSE-based borg/restic), return with
-        needs_mount=True and leave data_root as the intended mountpoint;
-        ensure_mounted() will be called before indexing.
+        explicit mount (FUSE-based borg/restic, when implemented),
+        return with needs_mount=True; ensure_mounted() will be called
+        before indexing.
         """
         ...
 
@@ -152,30 +197,46 @@ These functions port unchanged (modulo `Path` arg typing for snapshot paths):
 | `find_data_root()` | yes | each `DiscoveredSnapshot.data_root` |
 | `strip_acl_and_make_writable()` | adapted | `setfacl -b` on ext4/xfs with ACL; no-op on filesystems without |
 
-## Test approach
+## Test approach (revised after Codex Round 1)
 
-**Docker-based fake-backend fixtures.** Each backend test:
+Three layers, each with a clear job:
 
-1. Spins up a small Docker container with the backend's tooling installed (or simulated).
-2. Creates a fake `/Users/testuser/.claude/projects/<encoded>/foo.jsonl` tree at multiple "snapshot" timestamps with increasing file sizes.
-3. Runs `restore_claude_history.py --backend <name> --dest /tmp/restored`.
-4. Asserts: correct file count, largest version chosen, mtime preserved.
+### Layer 1 — in-process unit tests
 
-**Why Docker, not in-process mocks:** the backends shell out to real tools (`zfs`, `btrfs`, `timeshift`, etc.). Mocking subprocess calls in-process is fragile and doesn't validate command syntax against the actual tool. Containerized fixtures are slower but catch the real failure modes.
+Pure-Python tests of orchestrator and logic. No filesystem state, no subprocess. Run in <1s.
 
-**Pure-logic tests** (`test_pick_largest.py`, etc.) stay in-process — they exercise the upstream-preserved logic and don't need filesystem fixtures.
+- `test_pick_largest.py` — `pick_largest()` and `JsonlEntry` behavior
+- `test_orchestrator.py` — `--backend auto` selection rules: zero-match error, single-match auto-pick, multi-match ambiguity error; uses `LocalDirBackend` (a fake that yields pre-constructed `DiscoveredSnapshot`s)
+- Backend `is_available()` tests (mock subprocess calls)
 
-## Sequencing
+### Layer 2 — tempdir-based fake-backend tests
 
-1. **Phase 1 — Backend abstraction.** Land `backends/base.py` + ported orchestrator. v1 backends stubbed (raise NotImplementedError); upstream's logic preserved and tested via `test_pick_largest.py`. Existing upstream tests adapted to call through a `LocalDirBackend` (test-only) that just walks a static directory. CLI accepts `--backend` and `--list-backends`. No real backends wired yet. PR target: `main`.
+Tests of the restore loop end-to-end, using `LocalDirBackend` which treats a tempdir as if it were a snapshot. No real snapshot tooling needed; runs unprivileged.
 
-2. **Phase 2 — ZFS adapter.** First real backend. PR target: `feature/rcb-v1` (parent branch from `main`).
+- `test_restore_loop.py` — build N "snapshots" as tempdirs with varying `.jsonl` sizes; assert correct file selected, mtime preserved, dry-run is no-op
+- `verify_restore.py` — ported from upstream's end-to-end test, adapted to `LocalDirBackend`
 
-3. **Phase 3 — Btrfs adapter.** PR target: `feature/rcb-v1`.
+### Layer 3 — privileged/manual integration tests (opt-in)
 
-4. **Phase 4 — Timeshift adapter.** PR target: `feature/rcb-v1`.
+Real-backend tests requiring real filesystems and (for ZFS) kernel modules. NOT run in default `pytest` invocation; opt-in via `pytest tests/integration/` plus per-test prerequisites.
 
-5. **Phase 5 — README rewrite + cross-reference PR upstream.** README pivots to Linux. AI Team Lead opens cross-reference PR against `garrettmoss/restore-claude-history`'s README. PR target: `main`.
+- `test_zfs_real.py` — requires a writable test ZFS pool, snapshot creation perm; documented setup in `tests/integration/README.md`
+- `test_btrfs_real.py` — requires a Btrfs filesystem with snapshot perm
+- `test_timeshift_real.py` — requires Timeshift install + at least one snapshot
+
+**Why this split (vs the v1 directive's Docker-fixture approach):** Codex correctly observed that Docker fixtures can't validate kernel-dependent filesystem semantics (ZFS module loading, Btrfs subvolume mount behavior, `.zfs/snapshot` visibility) in unprivileged containers. Docker tests collapse into command-parsing validation, which we already get from Layer 1 with subprocess mocks. The three-layer split gives us: fast iteration on logic (Layer 1), end-to-end confidence with fake state (Layer 2), and real-world confidence on dedicated hosts (Layer 3) — without paying Docker's container overhead for tests that don't actually exercise the kernel paths.
+
+## Sequencing (revised after Codex Round 1)
+
+1. **Phase 1 — Abstraction + ZFS adapter wired end-to-end.** Land `backends/base.py`, `backends/_local_dir.py`, `backends/zfs.py`, orchestrator with `--backend auto` semantics (including ambiguity error), `--list-backends`. Tests: full Layer 1 + Layer 2; Layer 3 ZFS test exists but is opt-in. Codex review. PR target: `main`.
+
+   *Rationale:* Codex's medium-severity phasing concern is correct — abstractions without a real consumer don't get pressure-tested. ZFS is the cleanest first-real-backend (auto-mount, no overlap with other v1 backends, well-defined `zfs list` output).
+
+2. **Phase 2 — Btrfs adapter.** Adds `backends/btrfs.py` with Timeshift-skip logic. Tests: Layer 1 (Btrfs `discover()` mock subprocess), Layer 2 (n/a — covered by Phase 1's LocalDirBackend tests), Layer 3 opt-in. PR target: `feature/rcb-v1` (parent branch).
+
+3. **Phase 3 — Timeshift adapter.** Adds `backends/timeshift.py`; updates `btrfs.discover()` to actually skip Timeshift paths (so far it's a no-op). PR target: `feature/rcb-v1`.
+
+4. **Phase 4 — README rewrite + cross-reference PR upstream.** README pivots to Linux. AI Team Lead opens cross-reference PR against `garrettmoss/restore-claude-history`'s README for the "See also" wire-up. PR target: `main`.
 
 Each phase = separate PR with directive linked, Codex review, label progression.
 
@@ -184,7 +245,7 @@ Each phase = separate PR with directive linked, Codex review, label progression.
 - All phases require Codex review (per AGENTS.md "Codex review triggers").
 - All Python code passes `ruff check` (no `ruff format` enforcement yet).
 - All new code has type hints (matches upstream's style).
-- All new code has at least one test exercising the happy path.
+- All new code has at least one test in Layer 1 or Layer 2.
 - README and AGENTS.md stay accurate; PRs touching code update docs in the same PR.
 
 ## Out of scope for v1
@@ -199,8 +260,9 @@ Each phase = separate PR with directive linked, Codex review, label progression.
 
 | Risk | Mitigation |
 |---|---|
-| ZFS auto-mount detection varies by distro | Test on Ubuntu 24.04, openSUSE Tumbleweed, FreeBSD; document quirks per distro |
+| ZFS auto-mount detection varies by distro | Test on Ubuntu 24.04, openSUSE Tumbleweed, FreeBSD; document quirks per distro in `tests/integration/README.md` |
 | Btrfs read-only snapshot semantics | Test on snapper-managed Btrfs and bare Btrfs; document `nosuid,nodev,ro` mount requirements |
 | Timeshift snapshot config format changes | Pin to v22+ behavior; document detection logic in `backends/timeshift.py` docstring |
 | ACL handling on non-ACL filesystems | `setfacl -b` is a no-op on tmpfs / non-ACL filesystems; doesn't error — verified during test |
 | Upstream tool sees a bug fix we should pull in | Manual cherry-pick (this is a port, not a sync-fork); document the upstream-divergence point in README |
+| `--backend auto` ambiguity error is too aggressive | The overlap-resolution rules (Timeshift-on-Btrfs assigned to `timeshift`, etc.) keep multi-match rare; if it surfaces too often in real use, revisit with telemetry from `--list-backends` output |
