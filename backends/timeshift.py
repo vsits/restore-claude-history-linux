@@ -46,9 +46,11 @@ class TimeshiftBackend(SnapshotBackend):
         self,
         config_path: Path = _CONFIG_PATH,
         snapshot_bases: tuple[Path, ...] = _SNAPSHOT_BASES,
+        runtime_root: Path = Path("/run/timeshift"),
     ) -> None:
         self.config_path = config_path
         self.snapshot_bases = snapshot_bases
+        self.runtime_root = runtime_root
 
     def _load_config(self) -> dict | None:
         try:
@@ -64,25 +66,35 @@ class TimeshiftBackend(SnapshotBackend):
         """
         return self._load_config() is not None
 
+    def _runtime_base_dirs(self) -> list[Path]:
+        """Snapshot bases Timeshift exposes while it has the backup device
+        mounted. Covers both the non-PID (`/run/timeshift/backup`) and PID
+        (`/run/timeshift/<pid>/backup`) layouts, for both RSYNC and BTRFS."""
+        if not self.runtime_root.is_dir():
+            return []
+        backups = [self.runtime_root / "backup"]
+        backups.extend(sorted(self.runtime_root.glob("*/backup")))
+        out: list[Path] = []
+        for b in backups:
+            out.append(b / "timeshift" / "snapshots")
+            out.append(b / "timeshift-btrfs" / "snapshots")
+        return out
+
     def _snapshot_base_dirs(self) -> list[Path]:
-        bases = list(self.snapshot_bases)
-        # BTRFS-mode snapshots while Timeshift has the device mounted.
-        run = Path("/run/timeshift")
-        if run.is_dir():
-            bases.extend(sorted(run.glob("*/backup/timeshift-btrfs/snapshots")))
+        bases = list(self.snapshot_bases) + self._runtime_base_dirs()
         return [b for b in bases if b.is_dir()]
 
     @staticmethod
-    def _snapshot_data_root(ts_dir: Path) -> Path:
-        """The filesystem root inside a snapshot timestamp dir.
+    def _snapshot_data_roots(ts_dir: Path) -> list[Path]:
+        """Every filesystem root inside a snapshot timestamp dir.
 
-        RSYNC -> <ts>/localhost; BTRFS -> <ts>/@home (home subvol) or <ts>/@
-        (single root subvol). Falls back to the timestamp dir itself.
+        RSYNC -> [<ts>/localhost]; BTRFS -> [<ts>/@home, <ts>/@] when both
+        exist (each is a separate subvolume Btrfs also reports, so Timeshift
+        must claim BOTH for auto-mode dedup to fully prune the Btrfs peer).
+        Falls back to the timestamp dir itself when no known subdir exists.
         """
-        for sub in _DATA_SUBDIRS:
-            if (ts_dir / sub).is_dir():
-                return ts_dir / sub
-        return ts_dir
+        roots = [ts_dir / sub for sub in _DATA_SUBDIRS if (ts_dir / sub).is_dir()]
+        return roots or [ts_dir]
 
     def discover(self) -> list[DiscoveredSnapshot]:
         if self._load_config() is None:
@@ -93,15 +105,21 @@ class TimeshiftBackend(SnapshotBackend):
             for ts_dir in sorted(base.iterdir()):
                 if not ts_dir.is_dir():
                     continue
-                data_root = self._snapshot_data_root(ts_dir)
-                key = os.path.realpath(str(data_root))
-                if key in seen:
-                    continue
-                seen.add(key)
-                snaps.append(DiscoveredSnapshot(
-                    name=ts_dir.name,
-                    data_root=data_root,
-                    needs_mount=False,
-                    backend_state={"timestamp": ts_dir.name, "base": str(base)},
-                ))
+                for data_root in self._snapshot_data_roots(ts_dir):
+                    key = os.path.realpath(str(data_root))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    label = (ts_dir.name if data_root == ts_dir
+                             else f"{ts_dir.name}/{data_root.name}")
+                    snaps.append(DiscoveredSnapshot(
+                        name=label,
+                        data_root=data_root,
+                        needs_mount=False,
+                        backend_state={
+                            "timestamp": ts_dir.name,
+                            "subvol": data_root.name,
+                            "base": str(base),
+                        },
+                    ))
         return snaps

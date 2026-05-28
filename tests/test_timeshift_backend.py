@@ -13,9 +13,10 @@ def _config(tmp_path, btrfs_mode="false"):
     return cfg
 
 
-def _backend(tmp_path, base, btrfs_mode="false"):
+def _backend(tmp_path, base, btrfs_mode="false", runtime_root=None):
     return TimeshiftBackend(config_path=_config(tmp_path, btrfs_mode),
-                            snapshot_bases=(base,))
+                            snapshot_bases=(base,),
+                            runtime_root=runtime_root or (tmp_path / "no-runtime"))
 
 
 # -------- is_available --------
@@ -51,16 +52,19 @@ def test_discover_rsync_snapshots(tmp_path):
         str(base / "2026-05-28_12-00-01" / "localhost"),
     }
     assert all(s.needs_mount is False for s in snaps)
-    assert {s.name for s in snaps} == {"2026-05-28_00-00-01", "2026-05-28_12-00-01"}
+    assert {s.name for s in snaps} == {
+        "2026-05-28_00-00-01/localhost", "2026-05-28_12-00-01/localhost"}
 
 
-def test_discover_btrfs_prefers_home_subvol(tmp_path):
+def test_discover_btrfs_emits_both_subvols(tmp_path):
+    # Round-1 HIGH: a Timeshift BTRFS snapshot has @ AND @home; Timeshift must
+    # claim both so auto-mode dedup prunes both Btrfs sibling subvolumes.
     base = tmp_path / "snapshots"
     ts = base / "2026-05-28_00-00-01"
     (ts / "@home").mkdir(parents=True)
     (ts / "@").mkdir(parents=True)
     snaps = _backend(tmp_path, base, btrfs_mode="true").discover()
-    assert [str(s.data_root) for s in snaps] == [str(ts / "@home")]
+    assert {str(s.data_root) for s in snaps} == {str(ts / "@home"), str(ts / "@")}
 
 
 def test_discover_btrfs_single_root_subvol(tmp_path):
@@ -93,8 +97,31 @@ def test_discover_dedups_by_realpath(tmp_path):
     (real / "2026-05-28_00-00-01" / "localhost").mkdir(parents=True)
     link = tmp_path / "snapshots-link"
     link.symlink_to(real)
-    b = TimeshiftBackend(config_path=_config(tmp_path), snapshot_bases=(real, link))
+    b = TimeshiftBackend(config_path=_config(tmp_path), snapshot_bases=(real, link),
+                         runtime_root=tmp_path / "no-runtime")
     assert len(b.discover()) == 1
+
+
+def test_discover_runtime_rsync_mount(tmp_path):
+    # Snapshots exposed only via the non-PID runtime mount (RSYNC).
+    runtime = tmp_path / "run-timeshift"
+    snaps_dir = runtime / "backup" / "timeshift" / "snapshots"
+    (snaps_dir / "2026-05-28_00-00-01" / "localhost").mkdir(parents=True)
+    b = TimeshiftBackend(config_path=_config(tmp_path), snapshot_bases=(),
+                         runtime_root=runtime)
+    assert [str(s.data_root) for s in b.discover()] == [
+        str(snaps_dir / "2026-05-28_00-00-01" / "localhost")]
+
+
+def test_discover_runtime_btrfs_pid_mount(tmp_path):
+    # Snapshots exposed only via the PID runtime mount (BTRFS).
+    runtime = tmp_path / "run-timeshift"
+    snaps_dir = runtime / "1234" / "backup" / "timeshift-btrfs" / "snapshots"
+    ts = snaps_dir / "2026-05-28_00-00-01"
+    (ts / "@home").mkdir(parents=True)
+    b = TimeshiftBackend(config_path=_config(tmp_path, btrfs_mode="true"),
+                         snapshot_bases=(), runtime_root=runtime)
+    assert [str(s.data_root) for s in b.discover()] == [str(ts / "@home")]
 
 
 def test_discover_empty_without_config(tmp_path):

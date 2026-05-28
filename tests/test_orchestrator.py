@@ -163,3 +163,22 @@ def test_timeshift_on_btrfs_dedup_via_default_ownership():
     backend, snaps = choose_snapshots(registry, Options(backend="auto"))
     assert backend.name == "timeshift"
     assert len(snaps) == 1
+
+
+def test_timeshift_on_btrfs_dual_subvol_dedup():
+    # Round-1 HIGH: a BTRFS Timeshift snapshot has @ AND @home; Btrfs reports
+    # both. Timeshift must claim both so auto prunes both and selects Timeshift
+    # (rather than erroring ambiguous with a leftover Btrfs @).
+    registry = [
+        LocalDirBackend("btrfs", snapshots=[
+            snap("bt-root", "/mnt/snap/@"),
+            snap("bt-home", "/mnt/snap/@home"),
+        ]),
+        LocalDirBackend("timeshift", snapshots=[
+            snap("ts-root", "/mnt/snap/@"),
+            snap("ts-home", "/mnt/snap/@home"),
+        ]),
+    ]
+    backend, snaps = choose_snapshots(registry, Options(backend="auto"))
+    assert backend.name == "timeshift"
+    assert len(snaps) == 2
