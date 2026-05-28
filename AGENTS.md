@@ -15,33 +15,23 @@ The upstream tool is macOS + APFS + Time Machine only. This port keeps the upstr
 
 ## v1 scope
 
-| Layer | What ports cleanly | What gets replaced |
-|---|---|---|
-| Recovery logic | `JsonlEntry`, `Snapshot` dataclasses; `index_snapshot()`, `pick_largest()`; restore (mtime preservation, write-bit restore); skip-if-live-larger guard; CLI flags | — |
-| ACL handling | — | macOS `chmod -N` → Linux `setfacl -b` (or no-op for non-ACL filesystems) |
-| Snapshot discovery | — | `find_tm_device`, `list_snapshots`, `existing_mounts`, `mount_snapshot`, `unmount_if_ours`, `find_data_root` → backend-abstracted |
-
-**v1 backends (auto-discover, no user-supplied config paths):**
-- ZFS (`zfs list -t snapshot` → auto-mounted at `<dataset>/.zfs/snapshot/<name>/`)
-- Btrfs (`btrfs subvolume list` → read-only by default)
-- Timeshift (`/etc/timeshift/timeshift.json` → `/timeshift/snapshots/<ts>/`)
-
-**v1.1 backends (stubbed interfaces in v1, implemented later):**
-- LVM-thin, Snapper, borg, restic
+**Three backends, auto-discovery, no user-supplied config paths:** ZFS, Btrfs, Timeshift. See the [v1 directive](docs/directives/rcb-v1-directive-2026-05-28.md) for the full plan including the `--backend auto` ambiguity-error semantics, backend-overlap resolution rules (Timeshift-on-Btrfs assigned to `timeshift`, etc.), and the three-layer test approach.
 
 ## Git workflow
 
 - **Do not push directly to `main` unless explicitly instructed in the current turn.** Otherwise use feature branches and PRs, even for small fixes.
 - **Branch naming:** `feature/<name>` for features, `fix/<name>` for bugfixes, `docs/<name>` for docs-only, `chore/<name>` for maintenance work.
 - **PRs require review before merge.** See "Codex review triggers" below.
-- **The author does not merge their own PR.** After `ready-for-merge`, AI Team Lead or Chris merges. The Codex review bot (`vsits-codex-reviewer[bot]`) never merges — its role is approval-only.
+- **The author does not merge their own PR.** After `ready-for-merge`, AI Team Lead or Chris merges. The Codex review bot never merges — its role is approval-only.
 - **Commit messages:** lead with what changed and why, not how. First line under ~72 chars; details in body.
 
 ## GitHub bot identity
 
 All `gh` writes from this repo run under the **`vsits-restore-claude-builder[bot]`** App identity (cnighswonger-owned, single-repo scope), never under the operator's personal PAT for routine writes.
 
-**Exception — formal Codex reviews use a different bot.** When the formal `gh pr review` is posted per the "Codex review triggers" section below, that post runs under **`vsits-codex-reviewer[bot]`**, not `vsits-restore-claude-builder[bot]`. This separates approval signals from author signals in the PR audit trail.
+**Exception — formal Codex reviews use a different bot.** When the formal `gh pr review` is posted per the "Codex review triggers" section below, that post runs under **`vsits-codex-review-agent[bot]`** (the cnighswonger-scoped Codex bot — slug `codex-reviewer` in `generate-token.sh`), not `vsits-restore-claude-builder[bot]`. This separates approval signals from author signals in the PR audit trail.
+
+> The `codex-reviewer-vsits` slug in `generate-token.sh` is a different bot scoped to vsits-org repos only (`vsits/aegis`, etc.). For this repo, use `codex-reviewer` (no `-vsits` suffix).
 
 **Token route on visits-01:**
 
@@ -76,14 +66,25 @@ The implementer invokes Codex via `mcp__llm-relay__cli_delegate` with a structur
 
 1. **Inline summary in the PR description** — round number, severity table, finding-and-resolution rows. Keeps the design narrative discoverable for future readers.
 
-2. **Formal `gh pr review` post under the `vsits-codex-reviewer[bot]` identity:**
+2. **Formal `gh pr review` post under the `vsits-codex-review-agent[bot]` identity** (slug `codex-reviewer` in `generate-token.sh`).
+
+**Action depends on Codex's verdict** — pick the right command for each round:
 
 ```bash
-TOKEN=$(~/.claude/github-apps/generate-token.sh codex-reviewer-vsits)
-GH_TOKEN=$TOKEN gh pr review <PR#> --repo cnighswonger/restore-claude-history-linux --comment --body "<codex findings>"
+TOKEN=$(~/.claude/github-apps/generate-token.sh codex-reviewer)
+REPO=cnighswonger/restore-claude-history-linux
+
+# Final-round APPROVE — load-bearing for the formal-review gate:
+GH_TOKEN=$TOKEN gh pr review <PR#> --repo $REPO --approve --body "<codex findings>"
+
+# Blocking REQUEST CHANGES — when verdict is "block" or "request_changes":
+GH_TOKEN=$TOKEN gh pr review <PR#> --repo $REPO --request-changes --body "<codex findings>"
+
+# Non-final-round comment (intermediate iteration, verdict not yet decided):
+GH_TOKEN=$TOKEN gh pr review <PR#> --repo $REPO --comment --body "<codex findings>"
 ```
 
-**The final round must be `--approve` when Codex's verdict is approve, even with non-blocking nits.** A `--comment` review — regardless of body content — registers as state `COMMENTED` in GitHub's review-decision UI and does NOT check off the formal-review gate. Only `--approve` produces state `APPROVED`. If Codex's verdict is "block" or "another iteration needed," use `--request-changes`.
+**The final round must be `--approve` when Codex's verdict is approve, even with non-blocking nits.** A `--comment` review — regardless of body content — registers as state `COMMENTED` in GitHub's review-decision UI and does NOT check off the formal-review gate. Only `--approve` produces state `APPROVED`. If Codex's verdict is "block" or "request_changes," use `--request-changes` (which produces state `CHANGES_REQUESTED`).
 
 ## Label state machine
 
