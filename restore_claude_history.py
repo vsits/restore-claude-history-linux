@@ -15,7 +15,7 @@ or IDE running this. See NOTES.md for background.
 
 from __future__ import annotations
 
-__version__ = "1.0.1"
+__version__ = "1.1.0"
 
 import argparse
 import getpass
@@ -35,9 +35,11 @@ from pathlib import Path
 
 @dataclass
 class Snapshot:
-    """One APFS snapshot on the TM volume."""
+    """One APFS snapshot — either on an external TM volume or local to the boot Data volume."""
 
     name: str                # e.g. "com.apple.TimeMachine.2026-04-24-205237.backup"
+    device: str = ""         # BSD device the snapshot lives on, e.g. "disk5s2" or "disk3s5"
+    kind: str = "tm"         # "tm" (external TM drive) or "local" (internal Data volume)
     mountpoint: Path | None = None
     owned_by_us: bool = False  # True if we mount_apfs'd it (cleanup will unmount)
 
@@ -68,9 +70,10 @@ def die(msg: str) -> "NoReturn":  # type: ignore[name-defined]
 # -------- TM device detection --------
 
 
-def find_tm_device() -> str:
+def find_tm_device() -> str | None:
     """
-    Return e.g. 'disk5s2' — the APFS volume that is the user's TM destination.
+    Return e.g. 'disk5s2' — the APFS volume that is the user's TM destination,
+    or None if no TM drive is currently mounted.
 
     `tmutil destinationinfo` is authoritative; it lists the actual TM
     destinations and their mount points. We resolve the mount point back to
@@ -97,7 +100,21 @@ def find_tm_device() -> str:
         if m and re.search(r"time\s*machine", m.group(1), re.IGNORECASE):
             return m.group(2)
 
-    die("No Time Machine APFS volume detected. Plug in your TM drive and try again.")
+    return None
+
+
+def find_local_data_device() -> str | None:
+    """
+    Return the BSD device for the internal APFS Data volume (e.g. 'disk3s5'),
+    where macOS keeps local TM snapshots (`com.apple.TimeMachine.<ts>.local`).
+
+    The Data volume is always mounted at /System/Volumes/Data on modern macOS
+    (Catalina+); resolve via diskutil. Returns None if anything goes sideways
+    (non-APFS host, ancient macOS, etc.) so the caller can fall through.
+    """
+    dev_info = run(["diskutil", "info", "/System/Volumes/Data"], check=False).stdout
+    m = re.search(r"Device Node:\s*/dev/(disk\d+s\d+)", dev_info)
+    return m.group(1) if m else None
 
 
 def list_snapshots(device: str) -> list[str]:
@@ -127,13 +144,17 @@ def existing_mounts() -> dict[str, Path]:
     return result
 
 
-def mount_snapshot(snap: Snapshot, device: str, tmp_root: Path) -> bool:
+def mount_snapshot(snap: Snapshot, tmp_root: Path) -> bool:
     """Mount `snap` ourselves under tmp_root. Returns True on success."""
-    label = snap.name.removeprefix("com.apple.TimeMachine.").removesuffix(".backup")
-    mp = tmp_root / f"snap-{label}"
+    # Strip both possible suffixes — .backup (TM drive) and .local (boot Data volume).
+    label = (snap.name
+             .removeprefix("com.apple.TimeMachine.")
+             .removesuffix(".backup")
+             .removesuffix(".local"))
+    mp = tmp_root / f"snap-{snap.kind}-{label}"
     mp.mkdir(parents=True, exist_ok=True)
     try:
-        run(["mount_apfs", "-s", snap.name, f"/dev/{device}", str(mp)])
+        run(["mount_apfs", "-s", snap.name, f"/dev/{snap.device}", str(mp)])
     except subprocess.CalledProcessError as e:
         print(f"  warn: failed to mount {snap.name}: {e.stderr.strip()}", file=sys.stderr)
         try:
@@ -168,18 +189,26 @@ def unmount_if_ours(snap: Snapshot) -> None:
 
 def find_data_root(mp: Path) -> Path | None:
     """
-    Locate the 'Data' dir inside a snapshot mountpoint.
+    Locate the dir containing 'Users/<user>/.claude/...' inside a snapshot
+    mountpoint. Three known layouts:
 
-    Two known layouts:
-      1. mount_apfs we did ourselves:  <mp>/<ts>.backup/Data/Users/...
-      2. macOS auto-mount:             <mp>/<ts>.backup/Data/Users/...  (same)
-                                  OR   <mp>/Data/Users/...              (sometimes)
+      1. TM-drive snapshot via our mount_apfs: <mp>/<ts>.backup/Data/Users/...
+      2. TM-drive snapshot via macOS auto-mount: same as (1), or sometimes
+         <mp>/Data/Users/...
+      3. Local snapshot of the boot Data volume (snapshots of /dev/diskNsM
+         where N is the Data volume): the snapshot IS the Data volume, so
+         layout is <mp>/Users/... directly — no Data/ wrapper, no .backup
+         wrapper.
+
+    Returned path is the dir whose immediate child is 'Users'.
     """
+    if (mp / "Users").is_dir():
+        return mp                          # local-snapshot layout
     if (mp / "Data" / "Users").is_dir():
-        return mp / "Data"
+        return mp / "Data"                 # TM-drive direct layout
     for child in mp.glob("*.backup"):
         if (child / "Data" / "Users").is_dir():
-            return child / "Data"
+            return child / "Data"          # TM-drive auto-mount layout
     return None
 
 
@@ -353,6 +382,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dest", metavar="DIR", type=Path,
                    help="restore into DIR instead of ~/.claude/projects "
                         "(useful for testing against a copy of your real projects)")
+    p.add_argument("--source", choices=["local", "tm", "both"], default="both",
+                   help="which snapshot pool to search: 'local' (internal "
+                        "Data-volume APFS snapshots, no drive needed), 'tm' "
+                        "(external Time Machine drive), or 'both' (default — "
+                        "uses whichever is available, prefers newest first "
+                        "across pools)")
 
     # Encoded project names start with '-', which argparse would otherwise
     # mistake for another flag. Rewrite "--project FOO" -> "--project=FOO"
@@ -382,24 +417,63 @@ def main() -> int:
     if args.dest:
         print(f"Destination override: {claude_dir}")
 
-    device = find_tm_device()
-    print(f"Time Machine volume: /dev/{device}")
+    # Collect snapshots from one or both sources per --source.
+    # `tm` = external TM drive (deep history, but Spotlight-noisy and
+    # requires drive plugged in); `local` = internal Data volume snapshots
+    # (shallow — tied to TM activity, retained ~24h or until disk pressure
+    # prunes them — but always available, no drive needed). `both` (default)
+    # uses whichever sources actually have data.
+    snapshots: list[Snapshot] = []
 
-    snap_names = list_snapshots(device)
-    if not snap_names:
-        die(f"No APFS snapshots found on /dev/{device}.")
-    print(f"Found {len(snap_names)} snapshots.")
+    if args.source in ("tm", "both"):
+        tm_device = find_tm_device()
+        if tm_device is None:
+            if args.source == "tm":
+                die("No Time Machine APFS volume detected. Plug in your TM drive and try again.")
+            if args.verbose:
+                print("no Time Machine drive detected; continuing with local snapshots only")
+        else:
+            tm_names = list_snapshots(tm_device)
+            print(f"Time Machine volume: /dev/{tm_device} ({len(tm_names)} snapshot(s))")
+            snapshots.extend(
+                Snapshot(name=n, device=tm_device, kind="tm") for n in tm_names
+            )
 
-    pre_mounted = existing_mounts()
-    # Walk snapshots newest-first. Timestamps are embedded in the snapshot
-    # name, so lexical sort works. Two reasons for the ordering:
+    if args.source in ("local", "both"):
+        local_device = find_local_data_device()
+        if local_device is None:
+            if args.source == "local":
+                die("Could not locate the internal APFS Data volume (/System/Volumes/Data).")
+            if args.verbose:
+                print("no internal Data volume located; skipping local snapshots")
+        else:
+            local_names = list_snapshots(local_device)
+            print(f"Local Data volume:    /dev/{local_device} ({len(local_names)} snapshot(s))")
+            snapshots.extend(
+                Snapshot(name=n, device=local_device, kind="local") for n in local_names
+            )
+
+    if not snapshots:
+        die("No snapshots found in any requested source. "
+            "Plug in your TM drive, or check that local APFS snapshots exist "
+            "(`tmutil listlocalsnapshots /System/Volumes/Data`).")
+
+    # Walk snapshots newest-first across the merged pool. Snapshot names
+    # embed timestamps (com.apple.TimeMachine.YYYY-MM-DD-HHMMSS.{backup,local}),
+    # so lexical sort puts newest first regardless of source. Two reasons for
+    # the ordering:
     #   1. JSONLs are append-only; the newest snapshot containing a given
     #      (project, filename) holds the largest version. First sighting
-    #      wins, so we never copy a file we'll later overwrite.
-    #   2. restore_subdirs_from_snapshot uses first-writer-wins for
-    #      session subdirs (subagents/, memory/), matching the prior
-    #      all-at-end behavior.
-    snapshots = [Snapshot(name=n) for n in sorted(snap_names, reverse=True)]
+    #      wins (via the `seen` set below), so we never copy a file we'll
+    #      later overwrite — and we can short-circuit older snapshots
+    #      entirely for pairs we've already restored.
+    #   2. restore_subdirs_from_snapshot uses first-writer-wins for session
+    #      subdirs (subagents/, memory/), matching the prior all-at-end
+    #      behavior.
+    snapshots.sort(key=lambda s: s.name, reverse=True)
+    print(f"Found {len(snapshots)} snapshot(s) total across requested sources.")
+
+    pre_mounted = existing_mounts()
 
     # Sequential mount → index → restore → unmount, one snapshot at a time.
     # Earlier versions mounted every snapshot up front; that scaled poorly
@@ -422,7 +496,7 @@ def main() -> int:
                     tmp_root = Path(tempfile.mkdtemp(prefix="tm-claude-restore-"))
                 if args.verbose:
                     print(f"mounting {snap.name} under {tmp_root}")
-                if not mount_snapshot(snap, device, tmp_root):
+                if not mount_snapshot(snap, tmp_root):
                     continue
             else:
                 snap.mountpoint = pre_mounted[snap.name]
