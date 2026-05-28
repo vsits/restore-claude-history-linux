@@ -20,6 +20,19 @@ from backends.base import DiscoveredSnapshot, SnapshotBackend
 _NON_PATH_MOUNTPOINTS = {"none", "legacy", "-"}
 
 
+def _unescape_mountinfo(field: str) -> str:
+    """Decode the octal escapes util-linux writes into /proc/self/mountinfo.
+
+    Spaces, tabs, newlines, and backslashes in a path are encoded as \\040,
+    \\011, \\012, \\134. Backslash is decoded last so the others aren't
+    re-interpreted.
+    """
+    return (field.replace("\\040", " ")
+                 .replace("\\011", "\t")
+                 .replace("\\012", "\n")
+                 .replace("\\134", "\\"))
+
+
 def _zfs(args: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["zfs", *args], capture_output=True, text=True, check=False
@@ -77,9 +90,7 @@ class ZfsBackend(SnapshotBackend):
             fstype, source = post[0], post[1]
             if fstype != "zfs":
                 continue
-            # mountinfo escapes spaces etc. as octal; mountpoints with spaces in
-            # a Claude config dir are not a realistic concern, so use as-is.
-            out[source] = pre[4]
+            out[_unescape_mountinfo(source)] = _unescape_mountinfo(pre[4])
         return out
 
     def discover(self) -> list[DiscoveredSnapshot]:
