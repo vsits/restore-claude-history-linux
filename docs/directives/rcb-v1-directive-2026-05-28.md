@@ -1,7 +1,7 @@
 # RCB v1 Directive — Linux Port of restore-claude-history
 
 **Date:** 2026-05-28
-**Version:** v2 (revised after Codex Round 1)
+**Version:** v5 (revised after Codex Rounds 1–4)
 **Author:** AI Team Lead
 **Implementer:** vsits-restore-claude-builder (RCB)
 **Reviewer:** Codex Review Agent
@@ -18,6 +18,7 @@
   - Finding 5 (LOW): AGENTS.md gets distinct `--approve` / `--request-changes` / `--comment` examples; bot name reference corrected.
 - **v3 (2026-05-28):** Codex Round 2 addressed — the Round 1 fix to Finding 1 introduced an internal contradiction (Phase 2 supposedly ships Btrfs with Timeshift-skip logic; Phase 3 supposedly wires up the skip — incompatible). Moved overlap resolution from per-backend `discover()` into the orchestrator, where the overlap-resolution table is a single source of truth and skip rules only fire when the owning backend is actually registered. ABC docstring, overlap section, and Phase 2/3 descriptions now consistent.
 - **v4 (2026-05-28):** Codex Round 3 addressed — v3's "prune when owner is available" rule reintroduced a false-negative path (if owner `is_available()=True` but `discover()` returned zero due to config drift or parser failure, valid peer snapshots would still be stripped). Tightened the rule: pruning happens only when the owner backend positively returns at least one snapshot matching the claimed-path-pattern in this run. Also specified that explicit `--backend <name>` mode bypasses overlap resolution entirely.
+- **v5 (2026-05-28):** Codex Round 4 addressed — v4's "namespace-wide pruning on positive hit" still allowed false negatives on partial owner discovery (owner finds A and B under `/timeshift/snapshots/` but misses C; orchestrator prunes all three from peers). Tightened to per-snapshot exact-path-match: only the specific snapshot paths the owner actually returned in this run get pruned from peers. The "claimed-path-pattern" in the overlap table is now an informational heuristic for `--list-backends`, not a pruning rule. Also fixed Version header and design-choices recap to reflect v5 as the rule's landing point.
 
 ## Goal
 
@@ -80,11 +81,16 @@ When the same physical snapshots are visible to multiple backends, the directive
 | Bare Btrfs subvolumes (no Timeshift/Snapper management) | `btrfs` | No higher-layer config exists |
 | Bare ZFS snapshots | `zfs` | No overlap with other v1 backends |
 
-**The orchestrator applies the overlap-resolution table after discovery completes, gated on positive ownership claim.** Each backend's `discover()` reports what its tooling reports — no backend needs to know about its peers. After all backends have returned their `DiscoveredSnapshot` lists, the orchestrator deduplicates by walking the table above with this rule:
+**The orchestrator applies the overlap-resolution table after discovery completes, gated on per-snapshot positive claim.** Each backend's `discover()` reports what its tooling reports — no backend needs to know about its peers. After all backends have returned their `DiscoveredSnapshot` lists, the orchestrator deduplicates as follows:
 
-> For each `(owner, claimed-path-pattern)` entry, the orchestrator removes matching snapshots from peer backends' lists **only if the owner backend itself returned at least one snapshot under that claimed-path-pattern in this run.** Mere `is_available()=True` on the owner is insufficient to trigger pruning.
+> For each `DiscoveredSnapshot` returned by an owner backend (per the table above) at path `data_root=P`, the orchestrator removes from peer backends' lists any `DiscoveredSnapshot` whose `data_root` is `P` (after path canonicalization — `realpath` resolution to handle symlinks and bind mounts). Mere `is_available()=True` on the owner is insufficient; namespace-wide claim is insufficient; only the specific snapshot paths the owner actually returned in this run get pruned from peers.
 
-This guards against a false-negative path: if Timeshift's `is_available()` returns True but `discover()` returns zero (config drift, parser failure, transient mount issue), the orchestrator must NOT strip `/timeshift/snapshots/*` results from Btrfs — those Btrfs results may be the only recoverable candidates the user has.
+This closes three failure modes:
+1. **Owner zero-discovery** (Round 3): Owner is available but returned nothing — no pruning, peers' results stand. ✓
+2. **Owner partial discovery** (Round 4): Owner returned snapshots A and B but missed C under the same `/timeshift/snapshots/` namespace — only A and B are pruned from peers; C is preserved. ✓
+3. **Owner full discovery**: Owner returned A, B, C — all three pruned from peers; clean deduplication. ✓
+
+**What "claimed-path-pattern" in the table above actually means:** the pattern (`/timeshift/snapshots/`, `/.snapshots/`, etc.) describes WHERE the owner backend is expected to find its snapshots, used as a sanity-check heuristic for `--list-backends` output. It does NOT define what the orchestrator prunes. Pruning is always per-snapshot, by exact (canonicalized) `data_root` match.
 
 In Phase 2 (Btrfs only, Timeshift backend not yet registered), no pruning happens — Btrfs's results stand as-is, possibly with what Phase 3 would later attribute to Timeshift. The user gets candidates; correctness is preserved.
 
@@ -99,7 +105,7 @@ When the user passes `--backend zfs|btrfs|timeshift` (not `auto`), the orchestra
 - **Explicit-backend mode bypasses overlap pass.** Predictable, user-controlled, and matches the principle that explicit requests are honored verbatim.
 - **The overlap table is the single source of truth** — changes happen in one place (orchestrator) when a new backend is added, not scattered across every existing backend's `discover()`.
 
-The earlier v1 draft of this section assigned skip-responsibility to each backend's `discover()` (required `btrfs.discover()` to skip Timeshift paths "even when the higher-layer backend isn't implemented yet"). That was internally inconsistent with the phase plan. The v2 draft moved skip-responsibility to the orchestrator but used "owner is available" as the gate, which still had the false-negative path. v3 lands the positive-claim rule.
+The earlier v1 draft of this section assigned skip-responsibility to each backend's `discover()` (required `btrfs.discover()` to skip Timeshift paths "even when the higher-layer backend isn't implemented yet"). That was internally inconsistent with the phase plan. The v2 draft moved skip-responsibility to the orchestrator but used "owner is available" as the gate, which had a false-negative path when the owner returned zero. v3 added a "positive claim" gate but defined claim at namespace granularity, which had a partial-discovery false-negative path. v5 lands per-snapshot exact-path-match pruning, which closes all three failure modes.
 
 ## File layout
 
