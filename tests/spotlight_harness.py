@@ -39,22 +39,39 @@ BUCKETS = ["mds", "mds_stores", "mdworker_shared", "CGPDFService", "mdsync", "co
 OFFSETS = [0.0, 1.0, 5.0, 15.0, 30.0]
 
 
-def count_procs() -> dict[str, int]:
-    """Snapshot current process counts for our buckets via `ps`."""
-    r = subprocess.run(["ps", "-axo", "comm="], capture_output=True, text=True)
+def count_procs() -> tuple[dict[str, int], dict[str, float]]:
+    """Snapshot process counts AND summed %CPU per bucket via `ps`.
+
+    `ps -axo %cpu=,comm=` keeps comm untruncated (putting comm first or pairing
+    it with other columns triggers a 16-char truncation). %CPU is leading
+    numeric; comm is everything after.
+    """
+    r = subprocess.run(["ps", "-axo", "%cpu=,comm="], capture_output=True, text=True)
     counts = {b: 0 for b in BUCKETS}
+    pcts = {b: 0.0 for b in BUCKETS}
     for line in r.stdout.splitlines():
-        name = line.strip().rsplit("/", 1)[-1]
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            pct_s, comm = line.split(None, 1)
+            pct = float(pct_s)
+        except ValueError:
+            continue
+        name = comm.rsplit("/", 1)[-1]
         if name in counts:
             counts[name] += 1
-    return counts
+            pcts[name] += pct
+    return counts, pcts
 
 
 def sample(label: str, t0: float) -> None:
-    """Emit one TSV row: phase, elapsed, then one column per bucket."""
+    """Emit one TSV row: phase, elapsed, count cols, then %cpu cols."""
     elapsed = time.monotonic() - t0
-    c = count_procs()
-    row = [label, f"{elapsed:.2f}"] + [str(c[b]) for b in BUCKETS]
+    c, p = count_procs()
+    row = [label, f"{elapsed:.2f}"]
+    row += [str(c[b]) for b in BUCKETS]
+    row += [f"{p[b]:.1f}" for b in BUCKETS]
     print("\t".join(row), flush=True)
 
 
@@ -127,8 +144,11 @@ def main() -> int:
                     help="how long to keep sampling after unmount (default 30s)")
     args = ap.parse_args()
 
-    # Header
-    print("phase\telapsed_s\t" + "\t".join(BUCKETS), flush=True)
+    # Header: count cols first, then %cpu cols
+    cols = ["phase", "elapsed_s"]
+    cols += [f"{b}_n" for b in BUCKETS]
+    cols += [f"{b}_pct" for b in BUCKETS]
+    print("\t".join(cols), flush=True)
 
     if args.idle:
         t0 = time.monotonic()
