@@ -9,11 +9,17 @@
 
 Validate `BackendName.discover()` and the restore loop against **real** ZFS / Btrfs / Timeshift on real kernels — Layer 3 of the directive's test approach, automated. Run as a release gate, not a per-PR gate (cost discipline).
 
+## Precondition
+
+This plan is **executed after Phase 2 and Phase 3 have merged to `main`**. It depends on the Layer 3 test files (`tests/integration/test_btrfs_real.py`, `tests/integration/test_timeshift_real.py`) being present on the execution branch. The plan PR itself only lands the document; the harness implementation does not begin until the listed preconditions hold.
+
 ## Why this, why now
 
 The v1 directive's Phase 1 explicitly rejected Docker fixtures because the kernel-dependent semantics (ZFS module, Btrfs subvol mounts, `.zfs/snapshot` visibility) collapse to command-parsing checks under unprivileged containers — coverage we already get from the Layer 1 subprocess mocks. The fix prescribed was Layer 3: opt-in tests on real hosts (`tests/integration/`). Phase 1 shipped `test_zfs_real.py`; Phase 2 added `test_btrfs_real.py`; Phase 3 added `test_timeshift_real.py`. They self-skip without the right env, so today they pass-by-not-running everywhere except a host that already has the backend installed — which is none of our hosts.
 
 QEMU/KVM with stock cloud-init images gives us **real** kernels with each backend natively supported, run unprivileged inside the VM, host kept clean. This is exactly what the directive asked for; only the orchestration was missing.
+
+When this plan executes, the Phase 2 and Phase 3 Layer 3 tests will already be on `main` — this plan does not add or modify those tests, it only orchestrates running them on a real kernel.
 
 ## Non-Functional Requirements
 
@@ -27,7 +33,7 @@ QEMU/KVM with stock cloud-init images gives us **real** kernels with each backen
 
 For each of zfs / btrfs / timeshift:
 
-1. **Base image** — official Ubuntu 24.04 (or openSUSE Tumbleweed for Btrfs/Snapper coverage if useful) cloud image, fetched once into a local cache (`~/.cache/rcb-e2e/`). qcow2, ~600 MB.
+1. **Base image** — official Ubuntu 24.04 cloud image (v1 locks all three backends to Ubuntu; see Out of scope), fetched once into a local cache (`~/.cache/rcb-e2e/`). qcow2, ~600 MB.
 2. **cloud-init user-data** per backend, installing the snapshot tool, creating a tiny test pool/subvolume/config, taking a snapshot containing `.claude/projects/<proj>/*.jsonl` fixtures.
 3. **Boot ephemerally** with `qemu-system-x86_64 -snapshot` (writes discarded on exit) or libvirt transient domain. SSH in via a per-run ed25519 keypair on a forwarded port.
 4. **Run pytest inside the VM** against the existing Layer 3 tests, with the right `RCB_*_TEST_*` env var pointing at the prepared pool/mount/config.
@@ -41,7 +47,7 @@ The Layer 3 tests already exist; the harness only orchestrates *running* them on
 |---|---|---|---|
 | ZFS | Ubuntu 24.04 cloud | `apt install zfsutils-linux` | `RCB_ZFS_TEST_DATASET=rcbtest/home` (created in cloud-init) |
 | Btrfs | Ubuntu 24.04 cloud (root on ext4, scratch loopback for btrfs) | `apt install btrfs-progs` | `RCB_BTRFS_TEST_MOUNT=/mnt/rcbbtrfs` |
-| Timeshift | Ubuntu 24.04 cloud | `apt install timeshift` | `RCB_TIMESHIFT_TEST_BASE=/timeshift/snapshots` + `RCB_TIMESHIFT_TEST_CONFIG=/etc/timeshift/timeshift.json` |
+| Timeshift | Ubuntu 24.04 cloud | `apt install timeshift`; pre-seed RSYNC config; take a real snapshot with `timeshift --create` non-interactively | `RCB_TIMESHIFT_TEST_BASE=/timeshift/snapshots` + `RCB_TIMESHIFT_TEST_CONFIG=/etc/timeshift/timeshift.json` |
 
 ## File layout
 
@@ -57,7 +63,7 @@ tests/e2e/
 ├── btrfs/
 │   └── user-data.yaml    # cloud-init: btrfs-progs, loop fs, subvol + snapshot
 └── timeshift/
-    └── user-data.yaml    # cloud-init: timeshift install, RSYNC config, fake snapshot tree
+    └── user-data.yaml    # cloud-init: timeshift install, RSYNC config, real snapshot via `timeshift --create`
 ```
 
 No changes to `backends/` or `restore_claude_history.py`. No changes to existing `tests/integration/` Layer 3 tests — they are the workload, executed inside the VM rather than skipped on the host.
@@ -80,7 +86,7 @@ Storage layout: images cached under `~/.cache/rcb-e2e/`; per-run scratch under `
 | KVM unavailable on a dev's box (no `/dev/kvm`) | Fall back to TCG (slow but works). README documents the prereq check. |
 | Cloud image upstream URL changes | Cache the image; pin a checksum; documented update procedure. |
 | ZFS DKMS module build flakes in cloud-init | Use the prebuilt `zfsutils-linux` Ubuntu package (binary; no DKMS). |
-| Timeshift snapshot creation is interactive | Pre-seed the config in cloud-init; create snapshots non-interactively via `timeshift --create --comments rcb-test`. |
+| Timeshift snapshot creation is interactive | Pre-seed the config in cloud-init; create a real snapshot non-interactively via `timeshift --create --comments rcb-test`. The harness drives Layer 3 against real snapshots only — no fake snapshot trees. |
 | Test timeouts during long apt installs | Bound each backend's run at 10 min; surface clear error on timeout. |
 | Btrfs subvolume tests need root inside the VM | Use the VM's `root` account (it's an ephemeral VM; appropriate scope). |
 
@@ -98,7 +104,7 @@ Each commit is independent; PR opens after ZFS is green locally, the rest land i
 ## Out of scope
 
 - CI integration (GitHub Actions, self-hosted runner, DO).
-- Multi-distro coverage beyond Ubuntu (openSUSE Btrfs/Snapper is a v1.1 follow-up if it surfaces real bugs).
+- Multi-distro coverage beyond Ubuntu. openSUSE Tumbleweed coverage and the Snapper backend are a v1.1 follow-up tracked separately; explicitly NOT in scope for the v1 harness.
 - Performance benchmarking.
 - Anything that touches the production code paths in `backends/` or `restore_claude_history.py`.
 
