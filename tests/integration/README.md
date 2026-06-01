@@ -71,6 +71,28 @@ snapshots not reachable from any current mount are skipped. Document per-distro
 layout quirks (openSUSE `@/.snapshots`, mount options like `nosuid,nodev,ro`)
 here as they are discovered.
 
-## Timeshift
+## Timeshift — `test_timeshift_real.py`
 
-`test_timeshift_real.py` (Phase 3) lands with its backend.
+Read-only: points `TimeshiftBackend` at a real (or realistic) snapshots store
+and asserts every reported `data_root` is a readable directory. It does not
+invoke Timeshift or mount the backup device.
+
+```bash
+# Against a real Timeshift host (RSYNC mode, the Ubuntu default):
+export RCB_TIMESHIFT_TEST_BASE=/timeshift/snapshots
+# config defaults to /etc/timeshift/timeshift.json; override if needed:
+# export RCB_TIMESHIFT_TEST_CONFIG=/etc/timeshift/timeshift.json
+pytest tests/integration/test_timeshift_real.py -v
+
+# Or against a synthetic tree (no Timeshift install needed):
+mkdir -p /tmp/rcb-ts/2026-05-28_00-00-01/localhost/home/$USER/.claude/projects
+printf '{"btrfs_mode":"false"}' | sudo tee /etc/timeshift/timeshift.json >/dev/null
+export RCB_TIMESHIFT_TEST_BASE=/tmp/rcb-ts
+pytest tests/integration/test_timeshift_real.py -v
+```
+
+For BTRFS mode, snapshots live under `timeshift-btrfs/snapshots/<ts>/` with
+`@`/`@home` subvolumes (persistently at `/timeshift-btrfs/snapshots` or, while
+Timeshift has the device mounted, `/run/timeshift/<pid>/backup/...`). On a
+Timeshift-on-Btrfs host the `auto` orchestrator prunes the Btrfs backend's
+duplicate of a snapshot Timeshift also reports (Timeshift owns).

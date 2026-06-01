@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from backends.base import DiscoveredSnapshot, SnapshotBackend
 from backends.btrfs import BtrfsBackend
+from backends.timeshift import TimeshiftBackend
 from backends.zfs import ZfsBackend
 
 __all__ = [
@@ -11,14 +12,16 @@ __all__ = [
     "SnapshotBackend",
     "ZfsBackend",
     "BtrfsBackend",
+    "TimeshiftBackend",
     "default_registry",
 ]
 
 
 def default_registry() -> list[SnapshotBackend]:
-    """Backends wired into production runs.
+    """Backends wired into production runs (v1: ZFS, Btrfs, Timeshift).
 
-    Phases 1-2 ship ZFS + Btrfs. Timeshift (Phase 3) appends here as it lands.
-    The test-only LocalDirBackend is never registered.
+    Registering Timeshift activates the orchestrator's overlap-resolution pass
+    for Timeshift-on-Btrfs (the `timeshift > btrfs` ownership entry). The
+    test-only LocalDirBackend is never registered.
     """
-    return [ZfsBackend(), BtrfsBackend()]
+    return [ZfsBackend(), BtrfsBackend(), TimeshiftBackend()]

@@ -10,9 +10,11 @@ from pathlib import Path
 
 import pytest
 
+from backends import default_registry
 from backends._local_dir import LocalDirBackend
 from backends.base import DiscoveredSnapshot
 from restore_claude_history import (
+    DEFAULT_OWNERSHIP,
     Options,
     choose_snapshots,
     resolve_overlaps,
@@ -135,3 +137,48 @@ def test_choose_explicit_no_snapshots_errors():
     registry = [LocalDirBackend("zfs", snapshots=[])]
     with pytest.raises(SystemExit):
         choose_snapshots(registry, Options(backend="zfs"))
+
+
+# -------- Phase 3: Timeshift registration + dedup activation --------
+
+
+def test_default_registry_includes_all_v1_backends():
+    names = {b.name for b in default_registry()}
+    assert names == {"zfs", "btrfs", "timeshift"}
+
+
+def test_timeshift_owns_btrfs_in_default_ownership():
+    # The activation: registering Timeshift makes this ownership entry fire.
+    assert ("timeshift", "btrfs") in DEFAULT_OWNERSHIP
+
+
+def test_timeshift_on_btrfs_dedup_via_default_ownership():
+    # End-to-end with the REAL DEFAULT_OWNERSHIP (not a custom list): a snapshot
+    # both backends report at the same path is kept for timeshift, pruned from
+    # btrfs, so auto selects timeshift.
+    registry = [
+        LocalDirBackend("btrfs", snapshots=[snap("bt", "/mnt/snap/@home")]),
+        LocalDirBackend("timeshift", snapshots=[snap("ts", "/mnt/snap/@home")]),
+    ]
+    backend, snaps = choose_snapshots(registry, Options(backend="auto"))
+    assert backend.name == "timeshift"
+    assert len(snaps) == 1
+
+
+def test_timeshift_on_btrfs_dual_subvol_dedup():
+    # Round-1 HIGH: a BTRFS Timeshift snapshot has @ AND @home; Btrfs reports
+    # both. Timeshift must claim both so auto prunes both and selects Timeshift
+    # (rather than erroring ambiguous with a leftover Btrfs @).
+    registry = [
+        LocalDirBackend("btrfs", snapshots=[
+            snap("bt-root", "/mnt/snap/@"),
+            snap("bt-home", "/mnt/snap/@home"),
+        ]),
+        LocalDirBackend("timeshift", snapshots=[
+            snap("ts-root", "/mnt/snap/@"),
+            snap("ts-home", "/mnt/snap/@home"),
+        ]),
+    ]
+    backend, snaps = choose_snapshots(registry, Options(backend="auto"))
+    assert backend.name == "timeshift"
+    assert len(snaps) == 2

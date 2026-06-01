@@ -12,7 +12,7 @@ to know about each other.
 |---|---|---|---|
 | ZFS | `backends/zfs.py` | `zfs list -t snapshot` | auto-mounted at `<mountpoint>/.zfs/snapshot/<name>/` (`needs_mount=False`) |
 | Btrfs | `backends/btrfs.py` | `btrfs subvolume list -s` | read-only subvolumes, resolved against live mounts (`needs_mount=False`) |
-| Timeshift | `backends/timeshift.py` (Phase 3) | `/etc/timeshift/timeshift.json` + dir scan | `/timeshift/snapshots/<ts>/` |
+| Timeshift | `backends/timeshift.py` | `/etc/timeshift/timeshift.json` + dir scan | RSYNC `/timeshift/snapshots/<ts>/localhost/`; BTRFS `<ts>/@home`·`@` (`needs_mount=False`) |
 
 Both ZFS and Btrfs read the live mount table via `backends/_mountinfo.py`
 (`mounts_of_fstype`), which handles util-linux octal-escape decoding once for
@@ -21,9 +21,18 @@ all backends.
 The Btrfs adapter reports paths from `btrfs subvolume list -s` (relative to the
 filesystem root subvolume) and resolves each against the live mounts of that
 filesystem; a snapshot reachable from no current mount is skipped. It does no
-cross-backend overlap handling — in Phase 2, with Timeshift not yet registered,
-nothing is pruned (a Timeshift-on-Btrfs host sees the raw Btrfs inventory until
-Phase 3 wires the orchestrator's overlap pass).
+cross-backend overlap handling.
+
+The Timeshift adapter scans `/timeshift/snapshots`, `/timeshift-btrfs/snapshots`,
+and `/run/timeshift/*/backup/timeshift-btrfs/snapshots`, reporting each
+snapshot's filesystem root (`localhost` for RSYNC, `@home`/`@` for BTRFS).
+
+**Overlap pass is now active.** With Timeshift registered, the orchestrator's
+`auto`-mode dedup fires the `timeshift > btrfs` ownership rule: on a
+Timeshift-on-Btrfs host, a snapshot both backends report at the same
+canonical path is kept for Timeshift and pruned from Btrfs (per-snapshot,
+exact `realpath` match, gated on Timeshift positively returning that path).
+Explicit `--backend btrfs` still bypasses dedup and shows the raw inventory.
 
 ## Future-work backends (documented, not yet implemented)
 
