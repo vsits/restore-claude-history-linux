@@ -1,0 +1,20 @@
+# run: label=strategy-mdutil-off args={'device': 'disk5s2', 'snapshot': 'com.apple.TimeMachine.2026-06-01-100807.backup', 'kind': 'tm', 'idle': False, 'strategy': 'mdutil-off', 'post_unmount_window': 30.0, 'label': 'strategy-mdutil-off'}
+phase           elapsed_s  mds_n  mds_stores_n  mdworker_shared_n  CGPDFService_n  mdsync_n  corespotlightd_n  mds_pct  mds_stores_pct  mdworker_shared_pct  CGPDFService_pct  mdsync_pct  corespotlightd_pct
+pre-mount       0.00          1             1                 17               0         1                 1     26.8            36.7                224.5               0.0         2.5                 0.0
+# mount: mount_apfs -s com.apple.TimeMachine.2026-06-01-100807.backup /dev/disk5s2 /var/folders/vj/dfyk5m451l9dvlnhgx39v6fm0000gn/T/sh-harness-lc40z5ik/snap-tm
+# mdutil -i off -> rc=1 stdout='/System/Volumes/Data/private/var/folders/vj/dfyk5m451l9dvlnhgx39v6fm0000gn/T/sh-harness-lc40z5ik/snap-tm:\nError: unable to perform operation.  Try as root.  (-1)\n\tError: unknown indexing state.' stderr=''
+post-mount      0.02          1             1                 17               0         1                 1     24.4            22.8                237.6               0.0         3.6                 0.0
+post-mount      1.01          1             1                 13               0         1                 1     34.8            40.0                 77.5               0.0         3.1                 0.0
+# walked 200 files in 0.12s
+post-walk       0.00          1             1                 13               0         1                 1     69.4            29.6                 99.6               0.0         4.8                 0.0
+post-walk       1.01          1             1                 18               0         1                 1      7.9            70.7                 91.0               0.0         0.4                10.9
+post-walk       5.01          1             1                 17               0         1                 1     28.3            75.5                138.0               0.0         1.4                 0.0
+post-walk       15.00         1             1                 10               0         1                 1     49.6            58.2                104.6               0.0         2.1                 0.0
+post-walk       30.01         1             1                 20               0         1                 1      0.4           297.4                  0.0               0.0         0.0                 0.0
+# unmount
+post-unmount    0.00          1             1                  0               0         1                 1     17.9           201.3                  0.0               0.0         0.3                 0.0
+post-unmount    1.01          1             1                  0               0         1                 1      0.5           242.5                  0.0               0.0         0.0                 0.0
+post-unmount    5.01          1             1                  0               0         1                 1      0.0             0.0                  0.0               0.0         0.0                 0.0
+post-unmount    15.01         1             1                  0               0         1                 1      0.3             0.0                  0.0               0.0         0.0                 0.0
+post-unmount    30.01         1             1                 23               0         1                 1     30.4             5.5                266.0               0.0         1.2                 0.0
+# done strategy=mdutil-off
