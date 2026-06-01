@@ -26,6 +26,7 @@ Output: a TSV row per sample to stdout, plus a single summary line at the end.
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
 import os
 import subprocess
 import sys
@@ -33,6 +34,21 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+
+LOG_DIR = Path(__file__).resolve().parent / "logs"
+
+
+class _Tee:
+    """Write to two streams (stdout/stderr + log file)."""
+    def __init__(self, *streams):
+        self._streams = streams
+    def write(self, s):
+        for st in self._streams:
+            st.write(s)
+            st.flush()
+    def flush(self):
+        for st in self._streams:
+            st.flush()
 
 BUCKETS = ["mds", "mds_stores", "mdworker_shared", "CGPDFService", "mdsync", "corespotlightd"]
 # Sample offsets in seconds, relative to each phase marker.
@@ -162,7 +178,19 @@ def main() -> int:
                     choices=["none", "mdutil-off", "metadata-marker", "tmutil-exclude", "mount-flags"])
     ap.add_argument("--post-unmount-window", type=float, default=30.0,
                     help="how long to keep sampling after unmount (default 30s)")
+    ap.add_argument("--label", default=None,
+                    help="short tag for the log filename (default: derived from mode/strategy)")
     args = ap.parse_args()
+
+    # Tee stdout + stderr to a per-run log file under tests/logs/
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    label = args.label or ("idle" if args.idle else f"{args.kind or 'mount'}-{args.strategy}")
+    stamp = _dt.datetime.now().strftime("%Y-%m-%dT%H-%M")
+    log_path = LOG_DIR / f"{stamp}_{label}.tsv"
+    log_fh = open(log_path, "w")
+    sys.stdout = _Tee(sys.__stdout__, log_fh)
+    sys.stderr = _Tee(sys.__stderr__, log_fh)
+    print(f"# run: label={label} args={vars(args)}", file=sys.stderr)
 
     # Header: count cols first, then %cpu cols
     cols = ["phase", "elapsed_s"]
