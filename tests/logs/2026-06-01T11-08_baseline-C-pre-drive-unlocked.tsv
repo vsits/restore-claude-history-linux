@@ -1,0 +1,10 @@
+# run: label=baseline-C-pre-drive-unlocked args={'device': None, 'snapshot': None, 'kind': None, 'idle': True, 'strategy': 'none', 'post_unmount_window': 30.0, 'label': 'baseline-C-pre-drive-unlocked'}
+phase           elapsed_s  mds_n  mds_stores_n  mdworker_shared_n  CGPDFService_n  mdsync_n  corespotlightd_n  mds_pct  mds_stores_pct  mdworker_shared_pct  CGPDFService_pct  mdsync_pct  corespotlightd_pct
+idle            0.00          1             1                 15              11         1                 1      0.0             0.0                  1.7             163.6         0.0                 0.0
+idle            5.01          1             1                 17              11         1                 1      0.0             0.0                  2.2             195.9         0.0                 0.0
+idle            10.01         1             1                 27              11         1                 1      0.5             0.6                  0.9              78.1         0.0                 0.8
+idle            15.01         1             1                 24               5         1                 1      4.5            28.4                 93.3              91.7         0.1                 7.0
+idle            20.01         1             1                 31               5         1                 1      1.1             1.5                  0.8              32.9         0.0                 1.8
+idle            25.01         1             1                 31               5         1                 1      0.0             0.0                  0.3              98.1         0.0                 0.0
+idle            30.01         1             1                 30               5         1                 1      1.6             1.5                  0.4              95.8         0.0                 0.0
+# done idle
