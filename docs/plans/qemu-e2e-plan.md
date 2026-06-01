@@ -33,7 +33,7 @@ When this plan executes, the Phase 2 and Phase 3 Layer 3 tests will already be o
 
 For each of zfs / btrfs / timeshift:
 
-1. **Base image** — official Ubuntu 24.04 cloud image (v1 locks all three backends to Ubuntu; see Out of scope), fetched once into a local cache (`~/.cache/rcb-e2e/`). qcow2, ~600 MB.
+1. **Base image** — official Ubuntu 24.04 cloud image (v1 locks all three backends to Ubuntu; see Out of scope), fetched once into the image cache (default `~/.cache/rcb-e2e/images/`; see Storage layout below). qcow2, ~600 MB.
 2. **cloud-init user-data** per backend, installing the snapshot tool, creating a tiny test pool/subvolume/config, taking a snapshot containing `.claude/projects/<proj>/*.jsonl` fixtures.
 3. **Boot ephemerally** with `qemu-system-x86_64 -snapshot` (writes discarded on exit) or libvirt transient domain. SSH in via a per-run ed25519 keypair on a forwarded port.
 4. **Run pytest inside the VM** against the existing Layer 3 tests, with the right `RCB_*_TEST_*` env var pointing at the prepared pool/mount/config.
@@ -76,12 +76,12 @@ No changes to `backends/` or `restore_claude_history.py`. No changes to existing
 
 Two distinct stores, with the split chosen to respect the filesystems involved:
 
-- **Image cache (read-only base qcow2 images):** persistent. Default `~/.cache/rcb-e2e/images/`, overridable via the `RCB_E2E_CACHE` env var. On hosts where the home filesystem is tight, the recommended pattern is a symlink into a roomier mount — e.g. `~/.cache/rcb-e2e` → `/mnt/<large-volume>/rcb-e2e` — matching the symlink-into-SSD convention this project already uses for other adjacent caches (`~/cc-watch/extracts` → `/mnt/ssd/cc-watch/extracts`, etc.). The `run.sh` does not care which side the bytes land on; it just opens `RCB_E2E_CACHE`.
+- **Image cache (read-only base qcow2 images):** persistent. The harness uses **`<RCB_E2E_CACHE>/images/`** — `RCB_E2E_CACHE` is the cache **root** (default `~/.cache/rcb-e2e`), and the harness creates and writes to the `images/` subdirectory underneath. On hosts where the home filesystem is tight, the recommended pattern is a symlink at the root — e.g. `ln -s /mnt/<large-volume>/rcb-e2e ~/.cache/rcb-e2e` — matching the symlink-into-SSD convention this project already uses for other adjacent caches (`~/cc-watch/extracts` → `/mnt/ssd/cc-watch/extracts`, etc.). The image cache is filesystem-agnostic; read-only base images sit fine on exfat.
 - **Per-run scratch (writable overlay qcow2, seed ISO, SSH keypair):** `/tmp/rcb-e2e-<backend>-<pid>/`, auto-removed on exit. **MUST live on a POSIX filesystem (ext4/xfs/btrfs/zfs), not exfat**: QEMU's writable overlay relies on sparse files and atomic rename semantics that exfat does not provide reliably; runs on exfat scratch corrupt the overlay intermittently. `/tmp` on the root filesystem satisfies this on Linux out of the box; the harness's preflight check refuses to run if it detects the scratch root on a non-POSIX fs.
 
 Nothing in the repo tree mutates between runs.
 
-This split matters on this development host specifically: the root filesystem (`/`) is at 83% with ~50 GB free, the SSD mount (`/mnt/ssd`, exfat) has 1.6 TB free but isn't safe for the writable overlay. Image cache goes to `/mnt/ssd/rcb-e2e/`; scratch stays on the root fs's `/tmp`.
+This split matters on this development host specifically: the root filesystem (`/`) is at 83% with ~50 GB free, the SSD mount (`/mnt/ssd`, exfat) has 1.6 TB free but isn't safe for the writable overlay. We point `RCB_E2E_CACHE` at `/mnt/ssd/rcb-e2e` (or symlink `~/.cache/rcb-e2e` → there) so the harness places its read-only base images at `/mnt/ssd/rcb-e2e/images/`; scratch stays on the root fs's `/tmp`.
 
 ## Cost model
 
@@ -98,7 +98,7 @@ This split matters on this development host specifically: the root filesystem (`
 | Timeshift snapshot creation is interactive | Pre-seed the config in cloud-init; create a real snapshot non-interactively via `timeshift --create --comments rcb-test`. The harness drives Layer 3 against real snapshots only — no fake snapshot trees. |
 | Test timeouts during long apt installs | Bound each backend's run at 10 min; surface clear error on timeout. |
 | Btrfs subvolume tests need root inside the VM | Use the VM's `root` account (it's an ephemeral VM; appropriate scope). |
-| Image cache on a non-POSIX filesystem (e.g. exfat-mounted external volume) | Read-only base images are fine on exfat; the writable overlay is NOT. The preflight check refuses to run if the scratch root resolves to a non-POSIX fs, with a clear message. Image cache (`RCB_E2E_CACHE`) can still live on exfat. |
+| Scratch root on a non-POSIX filesystem (e.g. exfat) | The harness's preflight check refuses to run if the scratch root resolves to a non-POSIX fs, with a clear message pointing the user at `/tmp` on the root fs. The read-only image cache (`RCB_E2E_CACHE`) is unaffected and may still live on exfat. |
 
 ## Sequencing
 
