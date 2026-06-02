@@ -181,6 +181,28 @@ Every other author — any other human collaborator, any bot identity not on thi
 
 This fork maintains a bidirectional "See also" reference with [`garrettmoss/restore-claude-history`](https://github.com/garrettmoss/restore-claude-history). When the first mergeable cut lands, AI Team Lead opens a PR against upstream's README to add this fork to its "See also" section, and acknowledges the upstream attribution in this repo's README.
 
+## Upstream sync
+
+The fork's recovery loop began as a port of upstream's logic. Upstream is still active, so some commits there describe fixes or improvements that also apply here — and some describe macOS-specific work that doesn't. We need a discipline that catches the first kind without merging the second by accident.
+
+**Mechanism — automated detection, human triage.** A daily system cron sweep runs `scripts/upstream-sync-check.sh` on the operator's host. It fetches `upstream/master`, compares to our `origin/main`, and if the upstream head has advanced it opens (or comments on) an internal tracking issue titled `Upstream sync — pending review from garrettmoss/restore-claude-history`. The sweep posts the new commits and the files they touch; it does **not** open PRs, cherry-pick anything, or attempt to classify automatically. AI Team Lead reads the issue and dispositions each commit.
+
+**Triage classification.** Three buckets:
+
+- **apply** — bug fix or improvement in logic shared with the Linux port (e.g. the recovery loop's pick-largest / mtime / ACL behavior, encoded-cwd handling, picker rules). Cherry-pick through the normal PR flow with `Upstream-SHA: <hash>` in the commit message body so the link survives in the log.
+- **port** — applies in concept but needs translation. Upstream's macOS API is replaced by our backend interface; the commit's intent is preserved, but the code is re-implemented. Open a regular implementation issue describing the design question, not a cherry-pick.
+- **skip** — macOS-specific (Time Machine, APFS local snapshots, Spotlight, `tmutil`, `mount_apfs`, `mdutil`) or doc-only changes that don't apply to the Linux port's narrative. Record the disposition on the tracking issue so we don't re-evaluate the same commit next quarter.
+
+**No silent merges.** This fork never runs `git merge upstream/master` directly. Every upstream change that lands here goes through `apply` or `port`, both of which run through normal PR review.
+
+**Cron entry** (operator's user crontab on the build host) runs daily:
+
+```
+29 4 * * * /home/manager/git_repos/restore-claude-history-linux/scripts/upstream-sync-check.sh  # rcb upstream-sync sweep
+```
+
+The state file at `~/.claude/rcb-upstream-last-seen-sha` records the last upstream head the sweep has reported; resetting it forces a full re-report on the next run. Logs at `~/.claude/rcb-upstream-sync.log`. The sweep uses the `team-lead` bot identity (authorized to write internal tracking issues per "GitHub bot identity" above).
+
 ## See also
 
 - Upstream: [`garrettmoss/restore-claude-history`](https://github.com/garrettmoss/restore-claude-history) (macOS Time Machine)
