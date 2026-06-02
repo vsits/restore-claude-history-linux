@@ -3,7 +3,7 @@
 Recover deleted Claude Code chat transcripts from Linux filesystem snapshots.
 
 > **Status: beta.** The recovery logic is end-to-end-verified for **ZFS**, **Btrfs**, and **Timeshift** on Ubuntu 24.04 (real kernels, real snapshots, byte-equal restore). It has not yet been validated against real user data — only synthetic fixtures planted by the test harness. Specifically untested:
-> - Default-flag-only end-to-end coverage; `--include-memory`, `--project NAME`, `--dry-run`, and `--list-backends` output formatting have Layer 1/2 coverage but no Layer 3.
+> - The e2e harness exercises a single path: unflagged restore of one synthetic transcript from one snapshot. Code paths reachable only via `--include-memory`, `--project NAME`, `--dry-run`, or `--list-backends` have unit + tempdir coverage (Layer 1/2) but have never run inside the harness against a real backend.
 > - Unusual home-dir layouts: encrypted home (eCryptfs / fscrypt / ZFS-native), symlinked home across filesystems, NFS-mounted home.
 > - Cross-backend overlap-resolution against real backends (e.g. Timeshift-on-Btrfs deduplication) — tracked as [#13](https://github.com/cnighswonger/restore-claude-history-linux/issues/13) for v1.1.
 > - The full loop: restored file → Claude Code actually loads it without re-deletion — tracked as [#15](https://github.com/cnighswonger/restore-claude-history-linux/issues/15).
