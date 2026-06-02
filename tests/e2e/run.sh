@@ -190,17 +190,21 @@ if ! "$HERE/lib/ssh-wait.sh" "$SCRATCH/id_ed25519" "$SSH_PORT" "$SSH_WAIT_SECS";
 fi
 
 # Bound the rest of the run with RUN_TIMEOUT_SECS so a hung guest can't park
-# the wrapper indefinitely. We arm an alarm that SIGTERMs both qemu and us;
-# the EXIT trap then cleans up. Using $$ + nohup-style watchdog rather than
-# `timeout` because the remaining work is several ssh sessions, not a single
-# command we can wrap.
-( sleep "$RUN_TIMEOUT_SECS" \
-  && echo "ERROR: RUN_TIMEOUT_SECS=$RUN_TIMEOUT_SECS exceeded; killing run" >&2 \
-  && kill -TERM "$$" 2>/dev/null \
-) &
-WATCHDOG_PID=$!
-disown $WATCHDOG_PID 2>/dev/null || true
-trap 'kill "$WATCHDOG_PID" 2>/dev/null || true; kill "$QEMU_PID" 2>/dev/null || true; rm -rf "$SCRATCH"' EXIT
+# the wrapper indefinitely. We back the watchdog directly with `sleep` so the
+# tracked PID *is* the sleep — that way killing it from the EXIT trap leaves
+# no orphan `sleep` reparented to init.
+sleep "$RUN_TIMEOUT_SECS" &
+WATCHDOG_SLEEP_PID=$!
+# When the sleep wakes naturally, the watchdog fires: kill the wrapper so the
+# EXIT trap tears down the VM. If the wrapper exits first, the EXIT trap kills
+# the sleep before this wait observes its return.
+( wait "$WATCHDOG_SLEEP_PID" 2>/dev/null && \
+  echo "ERROR: RUN_TIMEOUT_SECS=$RUN_TIMEOUT_SECS exceeded; killing run" >&2 && \
+  kill -TERM "$$" 2>/dev/null ) &
+WATCHDOG_WAITER_PID=$!
+trap 'kill "$WATCHDOG_SLEEP_PID" "$WATCHDOG_WAITER_PID" 2>/dev/null || true; \
+      kill "$QEMU_PID" 2>/dev/null || true; \
+      rm -rf "$SCRATCH"' EXIT
 
 SSH="ssh -i $SCRATCH/id_ed25519 -p $SSH_PORT \
         -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
