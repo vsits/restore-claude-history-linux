@@ -36,15 +36,31 @@ if [ "$UPSTREAM_HEAD" = "$LAST_SEEN" ]; then
 fi
 
 # Range to report: from last-seen (or our main if first run) to current upstream head.
+# If LAST_SEEN is corrupt or no longer resolvable (e.g. upstream history rewrite,
+# manual edit), fall back to origin/main rather than silently advancing past
+# commits we never reported. Same fallback if the range produces no commits despite
+# the head having moved.
 RANGE_FROM="${LAST_SEEN:-origin/main}"
-NEW_COMMITS=$(git log --reverse --format='- `%h` %s' "$RANGE_FROM..$UPSTREAM_HEAD" 2>/dev/null)
-NEW_FILES=$(git log --name-only --pretty=format: "$RANGE_FROM..$UPSTREAM_HEAD" 2>/dev/null \
+if [ -n "$LAST_SEEN" ] && ! git rev-parse --verify --quiet "$LAST_SEEN^{commit}" >/dev/null; then
+    log "WARN: last-seen $LAST_SEEN no longer resolves (history rewrite?), falling back to origin/main"
+    RANGE_FROM="origin/main"
+fi
+NEW_COMMITS=$(git log --reverse --format='- `%h` %s' "$RANGE_FROM..$UPSTREAM_HEAD" 2>>"$LOG")
+NEW_FILES=$(git log --name-only --pretty=format: "$RANGE_FROM..$UPSTREAM_HEAD" 2>>"$LOG" \
     | sort -u | grep -v '^$' | sed 's/^/- /')
 
 if [ -z "$NEW_COMMITS" ]; then
-    log "fetch advanced but no new commits in $RANGE_FROM..$UPSTREAM_HEAD"
-    echo "$UPSTREAM_HEAD" > "$STATE_FILE"
-    exit 0
+    if [ "$RANGE_FROM" = "origin/main" ]; then
+        # Truly nothing new (upstream is at or behind our origin/main, or we
+        # already merged the divergence) — record the head and stop.
+        log "no new commits in $RANGE_FROM..$UPSTREAM_HEAD; head $UPSTREAM_HEAD recorded"
+        echo "$UPSTREAM_HEAD" > "$STATE_FILE"
+        exit 0
+    fi
+    # Head moved but range is empty — something unexpected. Re-report from
+    # origin/main on next run rather than advancing state and losing visibility.
+    log "ERROR: head advanced to $UPSTREAM_HEAD but $RANGE_FROM..$UPSTREAM_HEAD is empty; leaving state unchanged for full re-report"
+    exit 1
 fi
 
 # Get a token via the team-lead bot identity (authorized to write internal
@@ -89,20 +105,26 @@ For each commit, classify into one of:
 - **port** — applies in concept but needs translation (macOS-specific API replaced by our backend layer). Open a tracking issue with the design question.
 - **skip** — macOS-specific (Time Machine, APFS local snapshots, Spotlight, \`tmutil\`, \`mount_apfs\`) or doc-only changes that don't apply to the Linux port's narrative.
 
-After triage, comment on this issue with the classification per commit, then close the sweep. Sweep auto-files a new issue if more upstream commits land while this one is open — those go in a fresh sweep at the next cron tick, not as comments on this one.
+After triage, comment on this issue with the classification per commit, then close it. While this issue stays open, subsequent sweeps append additional commit batches as comments rather than opening new issues; closing the issue resets that — the next sweep with new commits opens a fresh issue.
 EOF
 )
 
 if [ -z "$ISSUE_NUM" ]; then
     log "creating new tracking issue"
-    ISSUE_URL=$(GH_TOKEN=$TOKEN gh issue create --repo "$GH_REPO" \
-        --title "$ISSUE_TITLE" \
-        --label "documentation" \
-        --body "$BODY" 2>>"$LOG")
+    if ! ISSUE_URL=$(GH_TOKEN=$TOKEN gh issue create --repo "$GH_REPO" \
+            --title "$ISSUE_TITLE" \
+            --label "documentation" \
+            --body "$BODY" 2>>"$LOG"); then
+        log "ERROR: gh issue create failed; leaving state unchanged"
+        exit 1
+    fi
     log "created: $ISSUE_URL"
 else
     log "commenting on existing issue #$ISSUE_NUM"
-    GH_TOKEN=$TOKEN gh issue comment "$ISSUE_NUM" --repo "$GH_REPO" --body "$BODY" >>"$LOG" 2>&1
+    if ! GH_TOKEN=$TOKEN gh issue comment "$ISSUE_NUM" --repo "$GH_REPO" --body "$BODY" >>"$LOG" 2>&1; then
+        log "ERROR: gh issue comment failed; leaving state unchanged"
+        exit 1
+    fi
 fi
 
 echo "$UPSTREAM_HEAD" > "$STATE_FILE"
