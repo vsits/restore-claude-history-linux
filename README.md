@@ -118,14 +118,18 @@ pytest tests/integration/ -v
 
 ## See also
 
-- **Upstream:** [`garrettmoss/restore-claude-history`](https://github.com/garrettmoss/restore-claude-history) — the macOS Time Machine original. Use that on macOS; the macOS and Linux trees deliberately don't merge (cross-OS confusion is a leading cause of restore failures in this problem space).
+If your situation isn't "Linux + filesystem snapshot + JSONLs missing from disk", one of these may help. Grouped by platform.
 
-If your situation isn't "Linux + filesystem snapshot + JSONLs missing from disk", one of these may help:
-
-- **[ibrews/claude-session-recovery](https://github.com/ibrews/claude-session-recovery)** — your JSONLs are still on disk, but Claude Desktop's UI doesn't show them (index corruption after a crash/BSOD). Cross-platform; rebuilds the Desktop session index.
-- **[markwoitaszek/claude-session-recovery](https://github.com/markwoitaszek/claude-session-recovery)** — Claude Desktop crashes with "There was a problem with the session" on a specific large/complex chat. Cross-platform; extracts the JSONL to clean Markdown so you don't lose the conversation.
-- **[BasedGPT/claude-code-session-recovery](https://github.com/BasedGPT/claude-code-session-recovery)** — Windows-specific Claude Desktop metadata repair (orphan JSONLs, junction slug mismatches, missing groupings).
+**macOS:**
+- **[garrettmoss/restore-claude-history](https://github.com/garrettmoss/restore-claude-history)** — the upstream this tool was ported from. macOS Time Machine + APFS local snapshots. Use that on macOS; the macOS and Linux trees deliberately don't merge (cross-OS confusion is a leading cause of restore failures in this problem space).
 - **[DeveloperAlly/claude-code-survival-toolkit](https://github.com/DeveloperAlly/claude-code-survival-toolkit)** — broader in-app survival kit for the VS Code extension: 9 fix scripts (sidebar dropped sessions, scrambled titles, scrambled sort order, vscode `state.vscdb` snapshot/restore) plus 7 governance hooks. macOS bash; use this if your data is on disk but the extension's sidebar is broken or scrambled.
+
+**Windows:**
+- **[BasedGPT/claude-code-session-recovery](https://github.com/BasedGPT/claude-code-session-recovery)** — Windows-specific Claude Desktop metadata repair (orphan JSONLs, junction slug mismatches, missing groupings).
+
+**Cross-platform:**
+- **[ibrews/claude-session-recovery](https://github.com/ibrews/claude-session-recovery)** — your JSONLs are still on disk, but Claude Desktop's UI doesn't show them (index corruption after a crash/BSOD). Rebuilds the Desktop session index.
+- **[markwoitaszek/claude-session-recovery](https://github.com/markwoitaszek/claude-session-recovery)** — Claude Desktop crashes with "There was a problem with the session" on a specific large/complex chat. Extracts the JSONL to clean Markdown so you don't lose the conversation.
 
 ## Further reading
 
