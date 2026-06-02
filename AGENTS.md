@@ -25,6 +25,36 @@ The upstream tool is macOS + APFS + Time Machine only. This port keeps the upstr
 - **The author does not merge their own PR.** After `ready-for-merge`, AI Team Lead or Chris merges. The Codex review bot never merges — its role is approval-only.
 - **Commit messages:** lead with what changed and why, not how. First line under ~72 chars; details in body.
 
+## Internal documents — do not push
+
+**This repo is public. Anything committed and pushed here is public the moment it lands on `origin`, and history scrubbing after the fact is unreliable** (force-push reduces visibility but doesn't guarantee erasure — orphaned commits remain reachable by SHA, forks may have already replicated, search indexes may have crawled).
+
+**Default:** treat every file you are about to add as public-facing unless you can affirmatively justify otherwise. Useful technical content is not by itself a justification for pushing — the test is "is it appropriate for an unauthenticated reader on the internet, with no further context from us?"
+
+The risk surface that matters here is **specifics that an external reader can use to map our internal layout**, not the generic concepts. Architecture choice (Btrfs vs ZFS), public CLI shape, public protocol behavior — all fine. What is **not** fine in a public commit:
+
+- **Absolute paths inside the operator's environment** — `/home/<user>/...`, `/mnt/<our-mountpoint>/...`, `~/.claude/...` outside the context of the tool's own documented usage.
+- **Hostnames, machine identifiers, drive serials, internal IPs, internal URLs.**
+- **The operator's directory structure and project inventory** — which repos sit where, what cache lives where, what's on which mount.
+- **Migration steps that name specific devices** (`/dev/sd{f,g,h,i}`, model numbers, the exact pool layout we plan to create).
+- **Internal tooling references** — paths under `~/.claude/`, `~/bin/`, `~/git_repos/<not-this-repo>/`, internal bot install IDs not already documented in this AGENTS.md, `/tmp/<our-handoff>.md`.
+- **Internal policies, handoffs, or coordination docs** — anything written for the operator or another bot, not for an external reader.
+
+**Where internal content goes instead.** Three already-supported escape hatches; pick by lifetime:
+
+- **`personal-notes.md` or `handoff.md` at the repo root** — gitignored (see `.gitignore`). Right place for notes the operator wants to read next to the code without publishing.
+- **`/tmp/<descriptive-name>.md`** — right place for one-shot coordination handoffs between agents within a session.
+- **A separate, private location entirely** (`~/git_repos/<this-repo>-internal/`, the operator's notebook, etc.) — right place for plans, migration procedures, and anything load-bearing on internal infrastructure.
+
+**Before pushing any new file, ask:**
+1. Does this file name absolute paths, hostnames, drive serials, or other internal-environment identifiers?
+2. Does this file describe our specific layout, inventory, or operational procedure rather than the public tool's behavior?
+3. Would an external reader gain anything from reading it that we wouldn't want them to know?
+
+If yes to any: it's internal. Route through one of the escape hatches above. **Even if the technical reasoning in the file is sound and would be useful internally** — the test is publication-appropriateness, not internal usefulness.
+
+This rule applies to every commit, every PR body, every issue body, every comment posted under any bot identity. It is not lifted by the file being in a `docs/` subdirectory, by the content being "just a plan," or by the file being narrowly-scoped.
+
 ## GitHub bot identity
 
 Three bot identities write to this repo:
