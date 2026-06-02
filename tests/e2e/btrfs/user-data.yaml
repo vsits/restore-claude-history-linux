@@ -1,0 +1,16 @@
+#cloud-config
+# Btrfs leg. Creates a file-backed Btrfs filesystem and mounts it at the
+# location the Layer 3 test expects.
+#
+# `packages:` is intentionally NOT used here — cloud-init's last-key-wins YAML
+# merge would drop the shared head's base packages (git, python3-pytest). The
+# btrfs-progs install goes in runcmd, same pattern as the ZFS leg.
+
+runcmd:
+  - [ git, clone, --depth, "1", "https://github.com/cnighswonger/restore-claude-history-linux.git", /opt/rcb ]
+  - [ sh, -c, "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq btrfs-progs" ]
+  - [ sh, -c, "truncate -s 512M /var/lib/rcb-btrfs.img" ]
+  - [ mkfs.btrfs, /var/lib/rcb-btrfs.img ]
+  - [ mkdir, -p, /mnt/rcbbtrfs ]
+  - [ mount, -o, loop, /var/lib/rcb-btrfs.img, /mnt/rcbbtrfs ]
+  - [ chown, "ubuntu:ubuntu", /mnt/rcbbtrfs ]

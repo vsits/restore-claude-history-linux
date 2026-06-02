@@ -1,0 +1,47 @@
+#cloud-config
+# Timeshift leg. Pre-seeds a minimal RSYNC-mode config, ensures the snapshot
+# parent dir exists, and creates a real snapshot non-interactively (no fake
+# trees — the harness drives Layer 3 against `timeshift --create` output).
+#
+# `packages:` is intentionally NOT used here — cloud-init's last-key-wins YAML
+# merge would drop the shared head's base packages (git, python3-pytest). The
+# timeshift install goes in runcmd, same pattern as the ZFS leg.
+
+write_files:
+  - path: /etc/timeshift/timeshift.json
+    permissions: '0644'
+    content: |
+      {
+        "backup_device_uuid" : "",
+        "parent_device_uuid" : "",
+        "do_first_run" : "false",
+        "btrfs_mode" : "false",
+        "include_btrfs_home_for_backup" : "false",
+        "include_btrfs_home_for_restore" : "false",
+        "stop_cron_emails" : "true",
+        "btrfs_use_qgroup" : "true",
+        "schedule_monthly" : "false",
+        "schedule_weekly" : "false",
+        "schedule_daily" : "false",
+        "schedule_hourly" : "false",
+        "schedule_boot" : "false",
+        "count_monthly" : "2",
+        "count_weekly" : "3",
+        "count_daily" : "5",
+        "count_hourly" : "6",
+        "count_boot" : "5",
+        "snapshot_size" : "0",
+        "snapshot_count" : "0",
+        "date_format" : "%Y-%m-%d %H:%M:%S",
+        "exclude" : [],
+        "exclude-apps" : []
+      }
+
+runcmd:
+  - [ git, clone, --depth, "1", "https://github.com/cnighswonger/restore-claude-history-linux.git", /opt/rcb ]
+  - [ sh, -c, "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq timeshift rsync" ]
+  - [ mkdir, -p, /timeshift/snapshots ]
+  # Pre-seed Timeshift's backup_device_uuid (the seeded config has it empty)
+  # to the rootfs UUID, so `timeshift --create` does not prompt interactively.
+  - [ sh, -c, "python3 -c 'import json,subprocess; p=\"/etc/timeshift/timeshift.json\"; d=json.load(open(p)); d[\"backup_device_uuid\"]=subprocess.check_output([\"findmnt\",\"-no\",\"UUID\",\"/\"]).decode().strip(); json.dump(d,open(p,\"w\"),indent=2)'" ]
+  - [ sh, -c, "timeshift --create --comments rcb-e2e" ]

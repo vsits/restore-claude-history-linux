@@ -1,0 +1,17 @@
+#cloud-config
+# ZFS leg. Cloud-init runs after run.sh's shared head (which appended the SSH
+# key and the repo-clone runcmd). The `runcmd` here continues that list.
+#
+# Note: zfsutils-linux + the matching `linux-modules-extra-$(uname -r)` are
+# installed in runcmd (not packages:) so the modules package name resolves
+# against the actually-running kernel — the generic `-virtual` metapackage
+# can't always be resolved against fresh-from-cloud-images apt indexes.
+runcmd:
+  - [ git, clone, --depth, "1", "https://github.com/cnighswonger/restore-claude-history-linux.git", /opt/rcb ]
+  - [ sh, -c, "apt-get update -qq" ]
+  - [ sh, -c, "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq zfsutils-linux linux-modules-extra-$(uname -r)" ]
+  - [ modprobe, zfs ]
+  - [ sh, -c, "truncate -s 256M /var/lib/rcb-zfs.img" ]
+  - [ sh, -c, "zpool create -f rcbtest /var/lib/rcb-zfs.img" ]
+  - [ sh, -c, "zfs create rcbtest/home" ]
+  - [ sh, -c, "chown ubuntu:ubuntu /rcbtest/home" ]
