@@ -86,6 +86,29 @@ def test_timeshift_full_restore():
     snaps = backend.discover()
     assert snaps, "no Timeshift snapshots discovered post-create"
 
+    # Diagnostic: before invoking run_restore, walk the discovered snapshot's
+    # data_root and assert that .claude/projects is actually present under it.
+    # This pinpoints whether a failure is in Timeshift's RSYNC scope (fixture
+    # not in the snapshot) or in locate_projects_dir (path-probing miss).
+    snap = snaps[0]
+    expected_relpath = Path("home/ubuntu/.claude/projects") / "-rcb-integration-demo" \
+        / "session.jsonl"
+    snap_file = snap.data_root / expected_relpath
+    if not snap_file.exists():
+        # Surface what IS in the snapshot so the failure is debuggable.
+        import subprocess as _sp
+        listing = _sp.run(
+            ["find", str(snap.data_root), "-maxdepth", "5", "-name", "*.jsonl",
+             "-o", "-name", ".claude", "-print"],
+            capture_output=True, text=True,
+        ).stdout
+        pytest.fail(
+            f"fixture not in snapshot at {snap_file}\n"
+            f"data_root: {snap.data_root}\n"
+            f"any .claude or *.jsonl under data_root (first 50):\n"
+            f"{listing[:5000]}"
+        )
+
     # Restore into the live tree's projects dir (dest override). Drives the
     # restore loop end-to-end against the real Timeshift backend (not a fake),
     # exercising locate + pick_largest + restore_file as production does.
