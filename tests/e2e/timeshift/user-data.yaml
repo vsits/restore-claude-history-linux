@@ -33,7 +33,7 @@ write_files:
         "snapshot_size" : "0",
         "snapshot_count" : "0",
         "date_format" : "%Y-%m-%d %H:%M:%S",
-        "exclude" : [],
+        "exclude" : ["+ /home/ubuntu/.claude/***"],
         "exclude-apps" : []
       }
 
@@ -54,4 +54,4 @@ runcmd:
   - [ sh, -c, "head -c 4096 /dev/urandom | base64 > /var/lib/rcb-expected.bin" ]
   - [ sh, -c, "cp /var/lib/rcb-expected.bin /home/ubuntu/.claude/projects/-rcb-integration-demo/session.jsonl" ]
   - [ chown, -R, "ubuntu:ubuntu", /home/ubuntu/.claude ]
-  - [ sh, -c, "timeshift --create --comments rcb-e2e --include /home/ubuntu" ]
+  - [ sh, -c, "timeshift --create --comments rcb-e2e" ]
