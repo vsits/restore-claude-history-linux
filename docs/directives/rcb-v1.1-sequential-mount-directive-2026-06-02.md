@@ -76,10 +76,12 @@ with a single newest-first loop:
 # new shape (pseudocode):
 snapshots_sorted = sorted(snapshots, key=lambda s: s.created_at, reverse=True)
 seen_jsonls: set[tuple[str, str]] = set()
+located: list[tuple[str, Path]] = []  # accumulated for the subdir pass below
 for snap in snapshots_sorted:
     projects = locate_projects_dir(snap.data_root, home)
     if projects is None:
         continue
+    located.append((snap.name, projects))
     for entry in index_projects(projects, opts):
         key = (entry.project, entry.filename)
         if key in seen_jsonls:
@@ -89,12 +91,13 @@ for snap in snapshots_sorted:
 # Subdir restore preserves the existing largest-subtree rule (NOT first-writer-wins).
 # Subdirs (subagents/, memory/) are NOT proven append-only — files can be renamed,
 # memory notes can be edited-and-shortened. Newest-first iteration is unsafe for
-# them. Run subdir restore AFTER the jsonl loop, against the full snapshot list,
-# using the existing largest-subtree selection.
-restore_subdirs(snapshots_sorted, ..., include_memory=opts.include_memory)
+# them. Pass the same `located` list the jsonl loop built; restore_subdirs picks
+# the largest subtree across all entries (its existing rule, unchanged).
+restore_subdirs(located, claude_dir, opts.project, opts.include_memory,
+                opts.dry_run, opts.verbose)
 ```
 
-The per-jsonl restore moves to first-writer-wins on `created_at`-sorted snapshots. **The per-subdir restore stays on the existing "largest subtree wins" rule** — its existing `restore_subdirs` function is kept as-is. Rename is not required; both the function name and the post-loop call site are unchanged. The only semantic shift in v1.1 is the jsonl path.
+The per-jsonl restore moves to first-writer-wins on `created_at`-sorted snapshots. **The per-subdir restore stays on the existing "largest subtree wins" rule** — `restore_subdirs`'s function body is kept as-is, and its existing `located: list[tuple[str, Path]]` parameter shape is also preserved (the new loop accumulates `located` during the jsonl pass so we don't re-walk to discover project dirs). The only semantic shift in v1.1 is the jsonl path.
 
 Rationale: JSONLs are append-only by construction (every event is a new line, no truncation, no in-place edits), so newest-mtime always means largest-size and the two selection rules give identical results. Subdirs (`subagents/`, `memory/`) carry no such invariant — `memory/<note>.md` files can be edited shorter, files can be removed, names can change. Switching subdir selection to first-writer-wins would silently regress restores against the v1.0.0 dogfood (which validated the largest-subtree behavior). The directive deliberately scopes the loop-shape change to jsonls only.
 
@@ -129,7 +132,7 @@ The tracking issue named three options. Rationale for picking (a):
 
 - [ ] `DiscoveredSnapshot.created_at` lands as a required UTC `datetime` field; all three v1 backends populate it.
 - [ ] Orchestrator's `run_restore` runs a sequential newest-first loop with `seen`-set dedupe for **jsonls only**. `pick_largest` is removed (anti-bloat lens applies; deletion preferred over shim retention).
-- [ ] `restore_subdirs` retains its existing "largest subtree wins" selection rule and is still called once after the jsonl loop with the full snapshot list. No semantic change to subdir restore.
+- [ ] `restore_subdirs` retains its existing "largest subtree wins" selection rule, its existing `located` parameter shape, and is still called once after the jsonl loop with the `located` list accumulated during that loop. No semantic change to subdir restore; signature unchanged.
 - [ ] All 87 existing tests pass.
 - [ ] QEMU e2e harness passes on ZFS, Btrfs, Timeshift.
 - [ ] Btrfs dogfood passes the same shape as v1.0.0.
@@ -141,7 +144,7 @@ The tracking issue named three options. Rationale for picking (a):
 This directive PR establishes scope, NFRs, and the design choice. The implementation lands in a separate PR titled along the lines of `feat: sequential per-snapshot restore loop with created_at (closes #22)`. Implementation order:
 
 1. Add `created_at` to `DiscoveredSnapshot`. Update each backend's `discover()` to populate it. Tests: per-backend unit tests that assert UTC tzinfo + reasonable bounds (no future timestamps, no negatives).
-2. Rewrite `run_restore` to the sequential shape for the jsonl path. Delete `pick_largest`. Leave `restore_subdirs` and its call site alone — semantic unchanged.
+2. Rewrite `run_restore` to the sequential shape for the jsonl path. Delete `pick_largest`. Accumulate `located` during the jsonl loop and pass it to `restore_subdirs` as-is — both function and signature unchanged.
 3. Update the existing tempdir-integration tests to assert first-writer-wins ordering **for jsonls**, and add a regression test confirming subdir restore still picks the largest subtree (a snapshot pair where the newer subtree is smaller than an older one).
 4. Run the full QEMU e2e harness on all three backends.
 5. Re-dogfood pass on Btrfs.
