@@ -101,8 +101,12 @@ def test_timeshift_full_restore():
         for s in snaps:
             # `find` boolean precedence: -name A -o -name B -print only
             # prints B-matches. Wrap the OR in parens so -print fires on both.
+            # -maxdepth 6 reaches both `.claude` (depth 4) and the
+            # `session.jsonl` (depth 6) under <localhost>/home/ubuntu/.claude/
+            # projects/<PROJECT>/. Without -maxdepth, find descends into
+            # arbitrarily-deep snapshot trees and the listing becomes useless.
             out = _sp.run(
-                ["find", str(s.data_root), "-maxdepth", "5",
+                ["find", str(s.data_root), "-maxdepth", "6",
                  "(", "-name", "*.jsonl", "-o", "-name", ".claude", ")",
                  "-print"],
                 capture_output=True, text=True,
