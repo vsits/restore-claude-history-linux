@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 from backends._mountinfo import mounts_of_fstype
@@ -78,26 +79,37 @@ class ZfsBackend(SnapshotBackend):
             return mp
 
         snaps: list[DiscoveredSnapshot] = []
-        r = _zfs(["list", "-H", "-o", "name", "-t", "snapshot"])
+        # `-p` makes `creation` a Unix epoch (parseable), not human-formatted text.
+        r = _zfs(["list", "-H", "-p", "-o", "name,creation", "-t", "snapshot"])
         if r.returncode != 0:
             return snaps
         for line in r.stdout.splitlines():
-            line = line.strip()
-            if "@" not in line:
+            parts = line.split("\t")
+            if len(parts) < 2:
                 continue
-            dataset, snapname = line.split("@", 1)
+            full_name, creation_str = parts[0], parts[1]
+            if "@" not in full_name:
+                continue
+            dataset, snapname = full_name.split("@", 1)
             mp = resolve_mountpoint(dataset)
             if mp is None:
                 # Truly unmounted dataset: no .zfs/snapshot path we can walk
                 # without mounting; skip rather than guess.
                 continue
+            try:
+                created_at = datetime.fromtimestamp(int(creation_str), tz=timezone.utc)
+            except (ValueError, OSError):
+                # Unparseable creation time — skip rather than report with a
+                # sentinel; the directive's contract is "no None case."
+                continue
             data_root = Path(mp) / ".zfs" / "snapshot" / snapname
             snaps.append(
                 DiscoveredSnapshot(
-                    name=line,
+                    name=full_name,
                     data_root=data_root,
                     needs_mount=False,
                     backend_state={"dataset": dataset, "snapshot": snapname},
+                    created_at=created_at,
                 )
             )
         return snaps

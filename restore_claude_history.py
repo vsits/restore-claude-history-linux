@@ -16,7 +16,7 @@ with a pluggable backend abstraction. See docs/ and AGENTS.md for background.
 
 from __future__ import annotations
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 import argparse
 import os
@@ -219,17 +219,6 @@ def index_projects(
     return entries
 
 
-def pick_largest(entries: list[JsonlEntry]) -> dict[tuple[str, str], JsonlEntry]:
-    """For each (project, filename), keep the entry with the largest size."""
-    best: dict[tuple[str, str], JsonlEntry] = {}
-    for e in entries:
-        key = (e.project, e.filename)
-        cur = best.get(key)
-        if cur is None or e.size > cur.size:
-            best[key] = e
-    return best
-
-
 # -------- restore --------
 
 
@@ -402,11 +391,17 @@ def run_restore(registry: list[SnapshotBackend], opts: Options) -> int:
     backend, snaps = choose_snapshots(registry, opts)
     print(f"Found {len(snaps)} snapshot(s).")
 
-    # Mount (no-op for auto-mounted backends), locate projects, index.
+    # v1.1: walk snapshots newest-first by backend-supplied created_at;
+    # first-writer-wins for each (project, filename). JSONLs are append-only,
+    # so newest creation-time always implies largest size on disk.
+    snaps_sorted = sorted(snaps, key=lambda s: s.created_at, reverse=True)
     located: list[tuple[str, Path]] = []
-    all_entries: list[JsonlEntry] = []
+    seen_jsonls: set[tuple[str, str]] = set()
+    restored = 0
+    total_bytes = 0
+    skipped = 0
     try:
-        for snap in snaps:
+        for snap in snaps_sorted:
             root = backend.ensure_mounted(snap)
             projects = locate_projects_dir(root, home)
             if projects is None:
@@ -414,25 +409,26 @@ def run_restore(registry: list[SnapshotBackend], opts: Options) -> int:
                     print(f"  {snap.name}: no .claude/projects under {root}")
                 continue
             located.append((snap.name, projects))
-            all_entries.extend(index_projects(projects, opts.project))
+            for entry in index_projects(projects, opts.project):
+                key = (entry.project, entry.filename)
+                if key in seen_jsonls:
+                    continue
+                seen_jsonls.add(key)
+                ok, n = restore_file(entry, claude_dir, opts.dry_run, opts.verbose)
+                if ok:
+                    restored += 1
+                    total_bytes += n
+                else:
+                    skipped += 1
 
-        if not all_entries:
+        if not seen_jsonls:
             die("No Claude JSONL files found in any snapshot.")
 
-        best = pick_largest(all_entries)
-        print(f"Indexed {len(best)} unique (project, jsonl) pairs across snapshots.")
+        print(f"Indexed {len(seen_jsonls)} unique (project, jsonl) pair(s) across snapshots.")
 
-        restored = 0
-        total_bytes = 0
-        skipped = 0
-        for entry in sorted(best.values(), key=lambda e: (e.project, e.filename)):
-            ok, n = restore_file(entry, claude_dir, opts.dry_run, opts.verbose)
-            if ok:
-                restored += 1
-                total_bytes += n
-            else:
-                skipped += 1
-
+        # Subdir restore preserves the existing largest-subtree rule. Subdirs
+        # (subagents/, memory/) are NOT proven append-only; first-writer-wins
+        # would silently regress against the v1.0.0 dogfood.
         subdirs = restore_subdirs(
             located, claude_dir, opts.project,
             opts.include_memory, opts.dry_run, opts.verbose,

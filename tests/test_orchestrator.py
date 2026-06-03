@@ -6,6 +6,7 @@ no filesystem state or subprocess is needed.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -22,9 +23,13 @@ from restore_claude_history import (
 )
 
 
-def snap(name: str, path: str) -> DiscoveredSnapshot:
+def snap(name: str, path: str,
+         created_at: datetime | None = None) -> DiscoveredSnapshot:
+    if created_at is None:
+        created_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
     return DiscoveredSnapshot(name=name, data_root=Path(path),
-                              needs_mount=False, backend_state={})
+                              needs_mount=False, backend_state={},
+                              created_at=created_at)
 
 
 # -------- select_auto rules --------

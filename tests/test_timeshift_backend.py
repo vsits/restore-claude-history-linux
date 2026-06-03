@@ -134,3 +134,43 @@ def test_discover_empty_without_config(tmp_path):
 def test_discover_empty_when_base_missing(tmp_path):
     b = _backend(tmp_path, tmp_path / "does-not-exist")
     assert b.discover() == []
+
+
+# -------- _parse_created_at (info.json + dir-name fallback) --------
+
+
+def test_parse_created_at_prefers_info_json_epoch(tmp_path):
+    """info.json's `created` epoch is the authoritative UTC source."""
+    import json as _json
+    from datetime import datetime, timezone
+
+    from backends.timeshift import _parse_created_at
+
+    ts_dir = tmp_path / "2026-06-02_17-10-26"
+    ts_dir.mkdir()
+    # 1780425026 = 2026-06-02 18:30:26 UTC — deliberately different from dir name
+    # so we can prove info.json wins.
+    (ts_dir / "info.json").write_text(_json.dumps({"created": "1780425026"}))
+    out = _parse_created_at(ts_dir)
+    assert out == datetime(2026, 6, 2, 18, 30, 26, tzinfo=timezone.utc)
+
+
+def test_parse_created_at_falls_back_to_dir_name(tmp_path):
+    """Without info.json, dir name parses as local time (warned)."""
+    ts_dir = tmp_path / "2026-06-02_17-10-26"
+    ts_dir.mkdir()
+    from backends.timeshift import _parse_created_at
+    out = _parse_created_at(ts_dir)
+    assert out is not None
+    # We can't assert the exact UTC without knowing the host TZ; assert it
+    # parsed and is timezone-aware (the fallback path goes through
+    # astimezone(utc) so the result is UTC-aware).
+    assert out.tzinfo is not None
+
+
+def test_parse_created_at_none_when_both_fail(tmp_path):
+    """Dir name doesn't match the format and no info.json — return None."""
+    ts_dir = tmp_path / "garbage-name"
+    ts_dir.mkdir()
+    from backends.timeshift import _parse_created_at
+    assert _parse_created_at(ts_dir) is None

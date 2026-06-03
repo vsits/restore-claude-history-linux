@@ -43,7 +43,7 @@ def test_discover_builds_snapshot_paths(monkeypatch):
         if "filesystem" in args:
             return _cp("tank/home\t/home\ntank/data\t/data\n")
         if "snapshot" in args:
-            return _cp("tank/home@daily-1\ntank/home@daily-2\ntank/data@daily-1\n")
+            return _cp("tank/home@daily-1\t1779926401\ntank/home@daily-2\t1779926401\ntank/data@daily-1\t1779926401\n")
         return _cp()
 
     monkeypatch.setattr(zfs_mod, "_zfs", fake_zfs)
@@ -66,7 +66,7 @@ def test_discover_skips_unmounted_none_but_keeps_real(monkeypatch):
         if "filesystem" in args:
             return _cp("tank/none\tnone\ntank/home\t/home\n")
         if "snapshot" in args:
-            return _cp("tank/none@s\ntank/home@s\n")
+            return _cp("tank/none@s\t1779926401\ntank/home@s\t1779926401\n")
         return _cp()
 
     monkeypatch.setattr(zfs_mod, "_zfs", fake_zfs)
@@ -84,7 +84,7 @@ def test_discover_resolves_legacy_via_live_mount(monkeypatch):
         if "filesystem" in args:
             return _cp("tank/home\tlegacy\n")
         if "snapshot" in args:
-            return _cp("tank/home@s\n")
+            return _cp("tank/home@s\t1779926401\n")
         return _cp()
 
     monkeypatch.setattr(zfs_mod, "_zfs", fake_zfs)
@@ -106,9 +106,49 @@ def test_discover_skips_dataset_without_mountpoint(monkeypatch):
         if "filesystem" in args:
             return _cp("tank/home\t/home\n")
         if "snapshot" in args:
-            return _cp("tank/home@s\ntank/ghost@s\n")
+            return _cp("tank/home@s\t1779926401\ntank/ghost@s\t1779926401\n")
         return _cp()
 
     monkeypatch.setattr(zfs_mod, "_zfs", fake_zfs)
     snaps = ZfsBackend().discover()
     assert [str(s.data_root) for s in snaps] == [str(Path("/home/.zfs/snapshot/s"))]
+
+
+# -------- created_at population --------
+
+
+def test_discover_populates_created_at_from_creation_epoch(monkeypatch):
+    """ZFS backend reads `creation` as a Unix epoch and stores as UTC."""
+    from datetime import datetime, timezone
+
+    _no_live_mounts(monkeypatch)
+
+    def fake_zfs(args):
+        if "filesystem" in args:
+            return _cp("tank/home\t/home\n")
+        if "snapshot" in args:
+            # 1779926401 = 2026-05-28 00:00:01 UTC
+            return _cp("tank/home@s\t1779926401\n")
+        return _cp()
+
+    monkeypatch.setattr(zfs_mod, "_zfs", fake_zfs)
+    snaps = ZfsBackend().discover()
+    assert len(snaps) == 1
+    s = snaps[0]
+    assert s.created_at == datetime(2026, 5, 28, 0, 0, 1, tzinfo=timezone.utc)
+    assert s.created_at.tzinfo is timezone.utc
+
+
+def test_discover_skips_snapshot_with_unparseable_creation(monkeypatch):
+    """Snapshot whose creation epoch is garbage is skipped, not sentinel'd."""
+    _no_live_mounts(monkeypatch)
+
+    def fake_zfs(args):
+        if "filesystem" in args:
+            return _cp("tank/home\t/home\n")
+        if "snapshot" in args:
+            return _cp("tank/home@s\tnot-a-number\n")
+        return _cp()
+
+    monkeypatch.setattr(zfs_mod, "_zfs", fake_zfs)
+    assert ZfsBackend().discover() == []

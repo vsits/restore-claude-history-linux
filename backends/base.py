@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 
@@ -20,6 +21,14 @@ class DiscoveredSnapshot:
     data_root: Path        # absolute path to the snapshot's filesystem root
     needs_mount: bool      # True if the backend must mount/unmount around use
     backend_state: dict    # opaque to the orchestrator; backend uses for cleanup
+    created_at: datetime   # UTC-aware datetime of snapshot creation
+    # ── created_at semantics ──────────────────────────────────────────────
+    # MUST be a UTC-aware datetime. The orchestrator sorts by this for
+    # newest-first iteration (v1.1 sequential restore loop). Backends source
+    # it from their native creation-time API; see per-backend discover()
+    # impls. Snapshots whose creation time cannot be determined SHOULD be
+    # skipped by the backend rather than reported with a sentinel value —
+    # this field has no default and no None case by design.
 
 
 class SnapshotBackend(ABC):

@@ -25,9 +25,56 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from backends.base import DiscoveredSnapshot, SnapshotBackend
+
+
+def _parse_created_at(ts_dir: Path) -> datetime | None:
+    """Determine the snapshot's creation time.
+
+    Per v1.1 directive: ``info.json``'s ``created`` epoch is the authoritative
+    UTC source. Falls back to the snapshot directory name (``YYYY-MM-DD_HH-MM-SS``,
+    Timeshift writes this from ``DateTime.now_local()`` — local-time,
+    DST-vulnerable). Returns None if neither parses.
+    """
+    info_json = ts_dir / "info.json"
+    if info_json.is_file():
+        try:
+            with info_json.open("r") as fh:
+                data = json.load(fh)
+            created_str = data.get("created")
+            if created_str is not None:
+                # Timeshift writes either an epoch or an ISO-formatted date.
+                # Try both shapes.
+                try:
+                    return datetime.fromtimestamp(int(created_str), tz=timezone.utc)
+                except (ValueError, TypeError):
+                    pass
+                try:
+                    return datetime.strptime(
+                        created_str, "%Y-%m-%d %H:%M:%S"
+                    ).replace(tzinfo=timezone.utc)
+                except ValueError:
+                    pass
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    # Fallback: snapshot dir name. WARNING: this is local-time per Timeshift's
+    # `DateTime.now_local()`, so cross-timezone correctness is best-effort.
+    try:
+        dt_local = datetime.strptime(ts_dir.name, "%Y-%m-%d_%H-%M-%S")
+    except ValueError:
+        return None
+    print(
+        f"timeshift: warning: {ts_dir.name} has no usable info.json; "
+        f"using dir-name timestamp (treated as local time, DST-vulnerable). "
+        f"Ordering across timezone boundaries may be approximate.",
+        file=sys.stderr,
+    )
+    return dt_local.astimezone(timezone.utc)
 
 _CONFIG_PATH = Path("/etc/timeshift/timeshift.json")
 # Persistent locations Timeshift exposes snapshots at (RSYNC + BTRFS modes).
@@ -105,6 +152,11 @@ class TimeshiftBackend(SnapshotBackend):
             for ts_dir in sorted(base.iterdir()):
                 if not ts_dir.is_dir():
                     continue
+                created_at = _parse_created_at(ts_dir)
+                if created_at is None:
+                    # No usable creation time. Per directive contract, skip
+                    # rather than emit a sentinel.
+                    continue
                 for data_root in self._snapshot_data_roots(ts_dir):
                     key = os.path.realpath(str(data_root))
                     if key in seen:
@@ -121,5 +173,6 @@ class TimeshiftBackend(SnapshotBackend):
                             "subvol": data_root.name,
                             "base": str(base),
                         },
+                        created_at=created_at,
                     ))
         return snaps

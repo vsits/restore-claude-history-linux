@@ -11,6 +11,7 @@ tree, exactly as a real snapshot of a user's home directory would.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from backends.base import DiscoveredSnapshot, SnapshotBackend
@@ -30,12 +31,18 @@ class LocalDirBackend(SnapshotBackend):
         if snapshots is not None:
             self._snapshots = snapshots
         else:
+            # Synthesize created_at so the orchestrator's newest-first
+            # sort has a stable order: index N → 2026-01-01 + N hours UTC.
+            # Tests that need a specific order construct snapshots
+            # directly with snapshots=...
+            base = datetime(2026, 1, 1, tzinfo=timezone.utc)
             self._snapshots = [
                 DiscoveredSnapshot(
                     name=f"{name}-{i}",
                     data_root=Path(r),
                     needs_mount=False,
                     backend_state={},
+                    created_at=base + timedelta(hours=i),
                 )
                 for i, r in enumerate(roots or [])
             ]

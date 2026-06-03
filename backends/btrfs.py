@@ -24,6 +24,7 @@ import os
 import re
 import shutil
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 from backends._mountinfo import Mount, mounts_of_fstype, read_all_mounts
@@ -56,6 +57,30 @@ def _parse_subvol_line(line: str) -> dict[str, str] | None:
         oi = toks.index("otime")
         otime = " ".join(toks[oi + 1:pi])
     return {"id": sid, "path": path, "otime": otime}
+
+
+def _parse_creation_time(data_root: Path) -> datetime | None:
+    """Parse 'Creation time' from `btrfs subvolume show -m <path>`.
+
+    The line format is e.g. ``Creation time:       2026-06-02 17:10:26 +0000``.
+    Returns a UTC datetime, or None if we can't parse a usable value.
+    """
+    r = _btrfs(["subvolume", "show", "-m", str(data_root)])
+    if r.returncode != 0:
+        return None
+    for line in r.stdout.splitlines():
+        line = line.strip()
+        if not line.lower().startswith("creation time:"):
+            continue
+        value = line.split(":", 1)[1].strip()
+        # `%z` accepts +0000-style offsets; older btrfs-progs sometimes emit
+        # without a TZ marker, in which case we refuse rather than guess.
+        try:
+            dt = datetime.strptime(value, "%Y-%m-%d %H:%M:%S %z")
+        except ValueError:
+            return None
+        return dt.astimezone(timezone.utc)
+    return None
 
 
 class BtrfsBackend(SnapshotBackend):
@@ -205,6 +230,11 @@ class BtrfsBackend(SnapshotBackend):
                 key = str(data_root)
                 if key in seen:
                     continue
+                created_at = _parse_creation_time(data_root)
+                if created_at is None:
+                    # No usable creation time. Per directive contract, skip
+                    # rather than emit a sentinel.
+                    continue
                 seen.add(key)
                 snaps.append(DiscoveredSnapshot(
                     name=parsed["path"],
@@ -215,5 +245,6 @@ class BtrfsBackend(SnapshotBackend):
                         "otime": parsed["otime"],
                         "subvol_path": parsed["path"],
                     },
+                    created_at=created_at,
                 ))
         return snaps

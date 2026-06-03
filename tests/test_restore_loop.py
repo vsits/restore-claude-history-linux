@@ -145,6 +145,31 @@ def test_restore_subdirs_picks_largest_subtree_not_lexical(tmp_path):
     assert restored.read_bytes() == b"a much larger agent body here"
 
 
+def test_restore_subdirs_largest_wins_when_newer_subtree_is_smaller(tmp_path):
+    """v1.1 regression: jsonl path moved to first-writer-wins on created_at,
+    but subdir path MUST keep largest-subtree selection. Construct a case
+    where the newer snapshot's subdir is smaller than the older one's; if
+    subdir restore had been accidentally switched to first-writer-wins it
+    would pick the newer (smaller) one.
+
+    LocalDirBackend assigns created_at by enumeration order: s1 → 2026-01-01
+    00:00 UTC, s2 → 2026-01-01 01:00 UTC. Newest-first iteration visits s2
+    first. We put the SMALL subdir on s2 (newest) and the LARGE one on s1
+    (oldest). If the largest-subtree rule still holds, the large one wins.
+    """
+    s1 = make_snapshot(tmp_path / "s1", {"a.jsonl": (b"x", 1_600_000_000.0)})
+    s2 = make_snapshot(tmp_path / "s2", {"a.jsonl": (b"x", 1_600_000_000.0)})
+    _add_subdir(s1, "subagents", {"agent.json": b"the full historical agent body - larger"})
+    _add_subdir(s2, "subagents", {"agent.json": b"truncated"})
+
+    dest = tmp_path / "dest"
+    registry = [LocalDirBackend("local", roots=[s1, s2])]
+    rc = run_restore(registry, Options(backend="auto", dest=dest))
+    assert rc == 0
+    restored = dest / PROJECT / "subagents" / "agent.json"
+    assert restored.read_bytes() == b"the full historical agent body - larger"
+
+
 def test_restore_subdirs_memory_gated_by_flag(tmp_path):
     s1 = make_snapshot(tmp_path / "s1", {"a.jsonl": (b"x", 1_600_000_000.0)})
     _add_subdir(s1, "memory", {"note.md": b"remembered"})

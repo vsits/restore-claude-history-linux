@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 import backends.btrfs as btrfs_mod
 from backends._mountinfo import Mount
 from backends.btrfs import BtrfsBackend, _parse_subvol_line
+
+
+_FIXED_CREATED_AT = datetime(2026, 5, 28, 0, 0, 1, tzinfo=timezone.utc)
 
 
 def _cp(stdout: str = "", returncode: int = 0) -> subprocess.CompletedProcess[str]:
@@ -160,6 +164,12 @@ def _stub_fs(monkeypatch, *, uuid=None, all_mounts=None):
     """Neutralize fs-UUID lookup + the mount-table read in discover tests."""
     monkeypatch.setattr(BtrfsBackend, "_fs_uuid", lambda self, mp: uuid)
     monkeypatch.setattr(btrfs_mod, "read_all_mounts", lambda: all_mounts or [])
+    # discover() now also calls _parse_creation_time() per snapshot (v1.1).
+    # Tests stub `_btrfs` globally to return subvolume-list output, which would
+    # not parse as a Creation-time line; short-circuit to a fixed UTC datetime
+    # so the discover path completes.
+    monkeypatch.setattr(btrfs_mod, "_parse_creation_time",
+                        lambda data_root: _FIXED_CREATED_AT)
 
 
 def test_discover_resolves_paths_under_subvol_mount(monkeypatch):
@@ -214,6 +224,8 @@ def test_discover_dedups_source_aliases_by_uuid(monkeypatch):
     ])
     monkeypatch.setattr(BtrfsBackend, "_fs_uuid", lambda self, mp: "UUID-1")
     monkeypatch.setattr(btrfs_mod, "read_all_mounts", lambda: [])
+    monkeypatch.setattr(btrfs_mod, "_parse_creation_time",
+                        lambda data_root: _FIXED_CREATED_AT)
     calls = {"n": 0}
 
     def fake_btrfs(args):
@@ -272,6 +284,8 @@ def test_discover_falls_back_to_shallower_visible_mount(monkeypatch):
     ])
     monkeypatch.setattr(btrfs_mod, "_btrfs",
                         lambda args: _cp(_line("256", "@/x") + "\n"))
+    monkeypatch.setattr(btrfs_mod, "_parse_creation_time",
+                        lambda data_root: _FIXED_CREATED_AT)
     snaps = BtrfsBackend().discover()
     assert [str(s.data_root) for s in snaps] == ["/@/x"]
 
@@ -290,6 +304,8 @@ def test_discover_falls_back_when_overmount_is_different_subvol(monkeypatch):
     monkeypatch.setattr(btrfs_mod, "read_all_mounts", lambda: fs_mounts)
     monkeypatch.setattr(btrfs_mod, "_btrfs",
                         lambda args: _cp(_line("256", "@/.snapshots/1/snapshot") + "\n"))
+    monkeypatch.setattr(btrfs_mod, "_parse_creation_time",
+                        lambda data_root: _FIXED_CREATED_AT)
     snaps = BtrfsBackend().discover()
     assert [str(s.data_root) for s in snaps] == ["/mnt/top/@/.snapshots/1/snapshot"]
 
@@ -317,4 +333,50 @@ def test_discover_empty_when_btrfs_fails(monkeypatch):
 
 def test_discover_empty_without_mounts(monkeypatch):
     monkeypatch.setattr(BtrfsBackend, "_btrfs_mounts", lambda self: [])
+    assert BtrfsBackend().discover() == []
+
+
+# -------- _parse_creation_time --------
+
+
+def test_parse_creation_time_with_tz_offset(monkeypatch, tmp_path):
+    """Parses 'Creation time: 2026-06-02 17:10:26 +0000' to UTC."""
+    from datetime import datetime, timezone
+
+    from backends.btrfs import _parse_creation_time
+
+    monkeypatch.setattr(btrfs_mod, "_btrfs",
+                        lambda args: _cp("Name: foo\n"
+                                          "Creation time:       2026-06-02 17:10:26 +0000\n"))
+    out = _parse_creation_time(tmp_path)
+    assert out == datetime(2026, 6, 2, 17, 10, 26, tzinfo=timezone.utc)
+    assert out.tzinfo is timezone.utc
+
+
+def test_parse_creation_time_returns_none_when_btrfs_fails(monkeypatch, tmp_path):
+    from backends.btrfs import _parse_creation_time
+    monkeypatch.setattr(btrfs_mod, "_btrfs",
+                        lambda args: _cp(returncode=1))
+    assert _parse_creation_time(tmp_path) is None
+
+
+def test_parse_creation_time_returns_none_when_tz_missing(monkeypatch, tmp_path):
+    """Older btrfs-progs that emit no TZ marker get refused, not guessed."""
+    from backends.btrfs import _parse_creation_time
+    monkeypatch.setattr(btrfs_mod, "_btrfs",
+                        lambda args: _cp("Creation time: 2026-06-02 17:10:26\n"))
+    assert _parse_creation_time(tmp_path) is None
+
+
+def test_discover_skips_snapshot_when_creation_time_unknown(monkeypatch):
+    """Discover refuses to emit a snapshot with no usable creation time."""
+    monkeypatch.setattr(BtrfsBackend, "_fs_uuid", lambda self, mp: "U")
+    monkeypatch.setattr(btrfs_mod, "read_all_mounts", lambda: [])
+    monkeypatch.setattr(BtrfsBackend, "_btrfs_mounts", lambda self: [_mnt()])
+    monkeypatch.setattr(btrfs_mod, "_btrfs",
+                        lambda args: _cp(_line("256", "@/s") + "\n"))
+    # No stub on _parse_creation_time → returns None (real impl, real failure
+    # mode, no stubbed btrfs-show output).
+    monkeypatch.setattr(btrfs_mod, "_parse_creation_time",
+                        lambda data_root: None)
     assert BtrfsBackend().discover() == []
