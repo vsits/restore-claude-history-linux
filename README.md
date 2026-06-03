@@ -1,18 +1,39 @@
 # restore-claude-history-linux
 
-Recover deleted Claude Code chat transcripts from Linux filesystem snapshots.
+Recover deleted Claude Code chat transcripts from Linux filesystem snapshots — **ZFS**, **Btrfs**, or **Timeshift**. `v1.1.0` ships with end-to-end validation on real kernels for all three backends; a real Btrfs dogfood confirmed a recovered transcript loads and resumes in a fresh Claude Code session. Linux port of [`garrettmoss/restore-claude-history`](https://github.com/garrettmoss/restore-claude-history) (macOS Time Machine).
 
-> **Status: beta.** The recovery logic is end-to-end-verified for **ZFS**, **Btrfs**, and **Timeshift** on Ubuntu 24.04 (real kernels, real snapshots, byte-equal restore), and a dogfood pass on Btrfs has confirmed a restored transcript loads and resumes in a fresh Claude Code session. Specifically untested:
-> - The e2e harness exercises a single path: unflagged restore of one synthetic transcript from one snapshot. Per-flag status:
->     - `--dry-run` and `--include-memory` have full restore-loop tempdir tests (Layer 2), but never run inside the e2e harness against a real backend.
->     - `--project NAME` has a Layer 1 test of the underlying `index_projects` filter function; its CLI wiring (`Options.project` → restore loop) has no automated test.
->     - `--list-backends` has no automated test coverage at any layer.
-> - Unusual home-dir layouts: encrypted home (eCryptfs / fscrypt / ZFS-native), symlinked home across filesystems, NFS-mounted home.
-> - Cross-backend overlap-resolution against real backends (e.g. Timeshift-on-Btrfs deduplication) — tracked as [#13](https://github.com/vsits/restore-claude-history-linux/issues/13) for v1.1.
->
-> **Reading the rest of this README assuming production-grade is wrong.** Use the tool, but treat each restore as a candidate to verify by hand.
+## Quickstart
 
-Linux port of [`garrettmoss/restore-claude-history`](https://github.com/garrettmoss/restore-claude-history) (macOS Time Machine). The recovery logic — walk every snapshot, pick the largest version of each transcript, copy it back preserving mtime — is unchanged from upstream. Only the snapshot-discovery layer is replaced, with pluggable backends for the snapshot tools Linux users actually run: **ZFS**, **Btrfs**, and **Timeshift**.
+```bash
+git clone https://github.com/vsits/restore-claude-history-linux
+cd restore-claude-history-linux
+
+# Which backends are available + how many snapshots each found:
+python3 restore_claude_history.py --list-backends
+
+# Preview what would be restored, copy nothing:
+python3 restore_claude_history.py --dry-run --verbose
+
+# Actually restore:
+python3 restore_claude_history.py
+```
+
+Before relying on recovery alone, read [Prevention first](#prevention-first). For per-flag documentation see [Flags](#flags); for the recovery walkthrough see [What it does](#what-it-does); for tips on getting Claude Code to *show* a restored session in `/resume`, see [Resuming a restored session](#resuming-a-restored-session).
+
+## Status
+
+End-to-end-verified on Ubuntu 24.04 for **ZFS**, **Btrfs**, and **Timeshift** (real kernels, real snapshots, byte-equal restore). A real Btrfs dogfood confirmed a deleted-then-restored transcript loads and resumes via `/resume` in a fresh Claude Code session.
+
+Specifically untested:
+
+- The e2e harness exercises a single path: unflagged restore of one synthetic transcript from one snapshot. Per-flag status:
+    - `--dry-run` and `--include-memory` have full restore-loop tempdir tests (Layer 2), but never run inside the e2e harness against a real backend.
+    - `--project NAME` has a Layer 1 test of the underlying `index_projects` filter function; its CLI wiring (`Options.project` → restore loop) has no automated test.
+    - `--list-backends` has no automated test coverage at any layer.
+- Unusual home-dir layouts: encrypted home (eCryptfs / fscrypt / ZFS-native), symlinked home across filesystems, NFS-mounted home.
+- Cross-backend overlap-resolution against real backends (e.g. Timeshift-on-Btrfs deduplication) — tracked as [#13](https://github.com/vsits/restore-claude-history-linux/issues/13) for v1.1+.
+
+Use the tool, but verify each restore by hand if the data matters.
 
 ## Background
 
@@ -34,7 +55,7 @@ That's ~100 years. There's no documented upper bound; the schema just wants a po
 
 ## Recovery
 
-This script: [`restore_claude_history.py`](restore_claude_history.py)
+This script: [`restore_claude_history.py`](restore_claude_history.py). The [Quickstart at the top](#quickstart) is the short version; this section is the reference.
 
 ### Requirements
 
@@ -45,22 +66,6 @@ This script: [`restore_claude_history.py`](restore_claude_history.py)
 - Python 3.10+
 - `setfacl` / `getfacl` (`acl` package) — used to strip inherited ACLs on restore. Missing or no-op-on-this-fs is fine; the script skips gracefully.
 - Snapshot tooling typically requires **root** for full inventory (e.g. `btrfs subvolume list -s`). Run with `sudo` if `--list-backends` shows zero snapshots despite snapshots existing.
-
-### Quickstart
-
-```bash
-git clone https://github.com/vsits/restore-claude-history-linux
-cd restore-claude-history-linux
-
-# See which backends are available and how many snapshots each found:
-python3 restore_claude_history.py --list-backends
-
-# Preview what would be restored, no changes made:
-python3 restore_claude_history.py --dry-run --verbose
-
-# Actually restore:
-python3 restore_claude_history.py
-```
 
 ### Flags
 
