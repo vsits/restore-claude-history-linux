@@ -1,6 +1,8 @@
 # AGENTS.md — vsits/restore-claude-history-linux
 
-Operating manual for AI agents (Claude Code, Codex, others) and human contributors working in this repository. Canonical file; AI tools should read this first.
+Operating manual for AI agents (Claude Code / Restore Claude Builder, Codex, others) and human contributors working in this repository.
+
+**Read first (Codex):** `~/.codex/AGENTS.md` — global Codex agent baseline (Code & Directive Review Agent discipline: bot identity per owner, posting rules, artifact persistence, label ownership, output format, citation rules, how-you-review checklist). This file adds RCB-specific context on top of that baseline.
 
 ## Repo identity
 
@@ -96,33 +98,15 @@ Because this repo is small and the v1 surface is well-defined, **all PRs require
 
 **Invoking Codex review (required workflow):**
 
-The implementer invokes Codex via `mcp__llm-relay__cli_delegate` with a structured review prompt. Codex returns CRITICAL/HIGH/MEDIUM/LOW findings as JSON. **Both** of the following must happen — body-embed alone is insufficient:
+The implementer invokes Codex via `mcp__llm-relay__cli_delegate` with a structured review prompt. The detailed posting commands (`gh pr review --approve|--request-changes|--comment`, `--approve`-vs-`--comment` gate semantics, artifact-persistence rules) live in the global Codex baseline at `~/.codex/AGENTS.md` — Codex reads it on every invocation. Both of the following must happen for each PR — body-embed alone is insufficient:
 
 1. **Inline summary in the PR description** — round number, severity table, finding-and-resolution rows. Keeps the design narrative discoverable for future readers.
 
-2. **Formal `gh pr review` post under the `vsits-codex-reviewer[bot]` identity** (slug `codex-reviewer-vsits` in `generate-token.sh`).
+2. **Formal `gh pr review` post under the `vsits-codex-reviewer[bot]` identity** (slug `codex-reviewer-vsits` in `generate-token.sh`) per global discipline. **Artifact path for this repo: `docs/code-reviews/`** (override of the global default `docs/reviews/`).
 
-**Action depends on Codex's verdict** — pick the right command for each round:
+## Directive Non-Functional Requirements (rubric for authors)
 
-```bash
-TOKEN=$(~/.claude/github-apps/generate-token.sh codex-reviewer-vsits)
-REPO=vsits/restore-claude-history-linux
-
-# Final-round APPROVE — load-bearing for the formal-review gate:
-GH_TOKEN=$TOKEN gh pr review <PR#> --repo $REPO --approve --body "<codex findings>"
-
-# Blocking REQUEST CHANGES — when verdict is "block" or "request_changes":
-GH_TOKEN=$TOKEN gh pr review <PR#> --repo $REPO --request-changes --body "<codex findings>"
-
-# Non-final-round comment (intermediate iteration, verdict not yet decided):
-GH_TOKEN=$TOKEN gh pr review <PR#> --repo $REPO --comment --body "<codex findings>"
-```
-
-**The final round must be `--approve` when Codex's verdict is approve, even with non-blocking nits.** A `--comment` review — regardless of body content — registers as state `COMMENTED` in GitHub's review-decision UI and does NOT check off the formal-review gate. Only `--approve` produces state `APPROVED`. If Codex's verdict is "block" or "request_changes," use `--request-changes` (which produces state `CHANGES_REQUESTED`).
-
-## Code quality — non-functional requirements & anti-bloat
-
-LLM-written code reliably satisfies functional requirements and neglects non-functional ones — security, maintainability, and especially size/complexity. These rules add the missing lens. (Canonical cross-repo standard maintained by the Project Lead.)
+Codex's anti-bloat review lens, the `Load-bearing?` validation step, and the file-path citation rules live in the global Codex baseline at `~/.codex/AGENTS.md`. This section documents the **rubric that directive authors must include** so the reviewer has something to validate against.
 
 **Directives created or materially revised after this policy must include a `## Non-Functional Requirements` section** (after Goal/Background, before scope; existing directives are grandfathered until their next material revision) — a short fixed checklist, a line or two each; `n/a` is valid except for **Load-bearing?**, which is a required yes/no:
 
@@ -131,8 +115,6 @@ LLM-written code reliably satisfies functional requirements and neglects non-fun
 - **Maintainability constraints** — new abstractions require explicit justification (repeated use, ≈3+ call sites, or concrete near-term reuse), else inline; no dead code; no defensive handling for impossible cases; no back-compat shims unless required.
 - **Performance/reliability** — only where it applies.
 - **Load-bearing?** (required yes/no) — yes if it touches a shared abstraction, a cross-package/wire contract, or anything security-relevant.
-
-**Anti-bloat review lens.** Alongside correctness, reviewers flag bloat that is (a) clearly larger/more complex than requirements justify AND (b) safe to simplify without changing behavior, stating the magnitude (e.g. a 100-line switch reducible to one line). Hunt: over-abstraction, dead code, copy-paste duplication, unnecessary state machines, defensive handling for impossible cases. Do not flag complexity that exists for a real reason, and never assert a simplification is safe when you cannot verify it is behavior-preserving. Bloat is advisory unless it causes a correctness problem. Also flag a missing/empty NFR section, and validate the `Load-bearing?` declaration against its criteria.
 
 ### Upstream-sync variant
 
