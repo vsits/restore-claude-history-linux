@@ -19,7 +19,7 @@ Upstream's `e7fa576` renamed the script as a disambiguation step ahead of adding
 
 ## Non-Functional Requirements
 
-- **Size/complexity budget:** ~25 lines of diff total — one `git mv` plus ~20 reference updates across 11 files (counts from `grep -rn "restore_claude_history" --include="*.py" --include="*.md" --include="*.sh"` at directive time). Review flags any net-new code; this PR adds none.
+- **Size/complexity budget:** ~40 lines of diff total — one `git mv` plus ~30 reference updates across the 13 files enumerated in Section 2. (As of `grep -rn "restore_claude_history" --include="*.py" --include="*.md" --include="*.sh"` at PR #33's head `87417e8`, raw grep returns 31 hits across 15 tracked files; subtracting `restore_claude_history.py` itself — handled by `git mv` — and this v1.2 directive — which preserves historical references by design — leaves the 13 implementation-target files listed below.) Review flags any net-new code; this PR adds none.
 - **Threat model:** None — the rename does not introduce new inputs, subprocesses, or trust boundaries. The only externally-visible change is the script path users invoke, which is documented in the release notes.
 - **Maintainability constraints:** No new abstractions. No back-compat shim, symlink, or wrapper script for the old filename — the deprecation note in the release body is the migration surface (see "Deprecation policy" below). Old git tags (`linux/v1.0.0`, `linux/v1.1.0`) remain valid historical references to the old filename; users on those tags retain the old path.
 - **Performance/reliability:** No runtime impact.
@@ -37,11 +37,11 @@ Old `__version__ = "1.1.0"` → `__version__ = "1.2.0"` in the renamed file. No 
 
 ### 2. Update in-repo references
 
-Mechanical find-replace of the string `restore_claude_history` → `restore_claude_code` across:
+Mechanical find-replace of the string `restore_claude_history` → `restore_claude_code` across 13 implementation-target files (22 hits total, verified at PR #33 head `87417e8`):
 
 - `README.md` (4 references — Quickstart block, script-reference link, two prose mentions)
 - `NOTES.md` (3)
-- `TODO.md` (2)
+- `TODO.md` (2 — narrative references in the Desktop-recovery planning section)
 - `docs/backends.md` (2)
 - `docs/plans/qemu-e2e-plan.md` (2)
 - `tests/verify_restore.py` (2 — imports + invocation)
@@ -53,6 +53,11 @@ Mechanical find-replace of the string `restore_claude_history` → `restore_clau
 - `docs/directives/rcb-v1-directive-2026-05-28.md` (1 — historical reference; update for consistency but do not rewrite the directive's design narrative)
 - `docs/directives/rcb-v1.1-sequential-mount-directive-2026-06-02.md` (1 — same)
 
+Two files in the raw grep (15 total) are deliberately not in this list:
+
+- `restore_claude_history.py` — handled by the `git mv` in Section 1, not by find-replace.
+- `docs/directives/rcb-v1.2-rename-restore-claude-code-2026-06-12.md` (this file) — preserves 8 references to the historical name by design, since the directive is the design surface for the rename and must continue to discuss the old name to be readable.
+
 Do NOT update historical references in:
 
 - Issue/PR bodies on GitHub. Those are append-only historical records; rewriting them would muddle the audit trail.
@@ -61,7 +66,7 @@ Do NOT update historical references in:
 
 ### 3. QEMU e2e harness
 
-The harness invokes the script by path. Update the invocation in `tests/e2e/run.sh` (and any companion scripts under `tests/e2e/`) to use the new filename. Re-run the harness against all three backends before tagging `linux/v1.2.0` — same release-gate discipline as v1.1.
+The harness does **not** invoke the script by path. `tests/e2e/run.sh` boots a cloud-init VM and shells in to run backend-specific pytest targets; the rename touches the harness only through the integration-test imports already enumerated in Section 2 (`tests/integration/test_zfs_real.py`, `tests/integration/test_btrfs_real.py`, `tests/integration/test_timeshift_real.py`). After those import updates land, **re-run the harness against all three backends** before tagging `linux/v1.2.0` — same release-gate discipline as v1.1. If during implementation a literal `restore_claude_history.py` path reference is discovered anywhere under `tests/e2e/` (other than the import-driven references above), it joins the Section 2 list as an additional update target.
 
 ### 4. Release notes
 
@@ -90,7 +95,11 @@ We do **not** ship a symlink, wrapper script, or `setup.py` console-entry shim f
 - All 93 existing tests pass after rename (the test imports are part of the reference update).
 - QEMU e2e harness passes on ZFS, Btrfs, and Timeshift after rename.
 - `python3 restore_claude_code.py --list-backends` runs successfully on the dogfood host.
-- `grep -rn "restore_claude_history" --include="*.py" --include="*.md" --include="*.sh"` returns zero hits after the PR (excluding historical references in `docs/directives/` that pre-date the rename — those reference the historical filename intentionally and should be checked manually rather than mass-renamed if the design narrative would otherwise become confusing).
+- `grep -rn "restore_claude_history" --include="*.py" --include="*.md" --include="*.sh"` returns hits ONLY in the following allowlist of files that intentionally preserve the historical name (any hit outside this list is a missed reference; any missed file from Section 2 is a forgotten reference):
+  - `docs/directives/rcb-v1.2-rename-restore-claude-code-2026-06-12.md` (this file) — the rename's design surface, by construction (~8 references).
+  - `docs/code-reviews/pr-33-round-1-codex.md` and any subsequent Codex review artifacts on the PRs covered by this directive — append-only historical record; do not edit.
+
+Both files in Section 2's "older directives" sub-list (the v1 and v1.1 directives) DO get the find-replace applied per Section 2, so they are NOT in this allowlist — they should return zero `restore_claude_history` hits after the implementation PR lands.
 
 ## Rollback
 
