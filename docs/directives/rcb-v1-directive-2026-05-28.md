@@ -119,7 +119,7 @@ The earlier v1 draft of this section assigned skip-responsibility to each backen
 ├── AGENTS.md
 ├── LICENSE                          # MIT (unchanged from upstream)
 ├── README.md                        # rewritten for Linux + cross-reference upstream
-├── restore_claude_history.py        # orchestrator (kept; backends imported)
+├── restore_claude_code.py        # orchestrator (kept; backends imported)
 ├── backends/
 │   ├── __init__.py
 │   ├── base.py                      # SnapshotBackend ABC + DiscoveredSnapshot

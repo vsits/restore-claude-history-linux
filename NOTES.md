@@ -1,6 +1,6 @@
 # Notes
 
-Design rationale and lessons learned from building `restore_claude_history.py`. The README covers usage; this is for anyone who wants to understand *why* the script makes the choices it does — including future-you, six months from now, wondering "why am I parsing this in such a weird way?"
+Design rationale and lessons learned from building `restore_claude_code.py`. The README covers usage; this is for anyone who wants to understand *why* the script makes the choices it does — including future-you, six months from now, wondering "why am I parsing this in such a weird way?"
 
 ## Prevention vs. restoration
 
@@ -30,7 +30,7 @@ So there are two layers.
 
 A forward-looking backup is the natural complement here — a `SessionStart` hook that copies JSONLs out of `~/.claude/projects/` on every session launch, before the next cleanup pass can touch them. @ojura sketched one on [#59248](https://github.com/anthropics/claude-code/issues/59248) (a small bash script wired into `~/.claude/settings.json`). We are *not* recommending it in our README yet — this repo currently does Time Machine recovery only, and pointing readers at a third-party snippet with no integration would muddy that story. The right move is to write our own `backup_claude_history.py` alongside the restore script, credit ojura's approach, and add a coherent "back up going forward + recover from Time Machine" story to the README at that point. Tracked in [TODO.md](TODO.md).
 
-**Restoration** is [`restore_claude_history.py`](restore_claude_history.py). It assumes the worst has already happened and pulls your chats back out of Time Machine. It's what catches you when prevention fails — which, given the track record, is a "when" not an "if."
+**Restoration** is [`restore_claude_code.py`](restore_claude_code.py). It assumes the worst has already happened and pulls your chats back out of Time Machine. It's what catches you when prevention fails — which, given the track record, is a "when" not an "if."
 
 ## Why updates seem to trigger this
 
@@ -40,7 +40,7 @@ A forward-looking backup is the natural complement here — a `SessionStart` hoo
 - Cloud sync clients (Dropbox, iCloud) that rewrite files on conflict
 - Any script that normalizes mtimes — including, ironically, scripts written *to repair* the picker's chronology
 
-This is also why `restore_claude_history.py` goes out of its way to preserve the snapshot's original mtime and explicitly re-stamp after any retry (NOTES step 5 below). If a restore landed with a fresh `now` mtime, the next cleanup pass would happily delete months of work all over again.
+This is also why `restore_claude_code.py` goes out of its way to preserve the snapshot's original mtime and explicitly re-stamp after any retry (NOTES step 5 below). If a restore landed with a fresh `now` mtime, the next cleanup pass would happily delete months of work all over again.
 
 That said, the mtime story doesn't explain everything. Even with the flag set high *and* mtimes preserved, sessions still vanish around updates. The precipitating event, in my experience, has not been "I left chats sitting around for 30+ days and `cleanupPeriodDays` finally got them." It's been: **I closed VS Code, reopened it, and the chats were gone.**
 

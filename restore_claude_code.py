@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-restore_claude_history.py
+restore_claude_code.py
 
 Recover deleted Claude Code chat transcripts (~/.claude/projects/<project>/*.jsonl)
 from Linux filesystem snapshots (ZFS / Btrfs / Timeshift / ...).
@@ -16,7 +16,7 @@ with a pluggable backend abstraction. See docs/ and AGENTS.md for background.
 
 from __future__ import annotations
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 import argparse
 import os

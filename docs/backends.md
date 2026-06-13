@@ -2,7 +2,7 @@
 
 Each backend adapts one Linux snapshot/backup mechanism to the
 `SnapshotBackend` interface in [`backends/base.py`](../backends/base.py). The
-orchestrator (`restore_claude_history.py`) talks to backends only through that
+orchestrator (`restore_claude_code.py`) talks to backends only through that
 interface and handles cross-backend deduplication itself — backends never need
 to know about each other.
 
@@ -59,7 +59,7 @@ module only when actually built:
 3. Add the `--backend <name>` choice in `parse_args()`.
 4. If the backend can see paths another backend also sees (e.g. Snapper sits on
    Btrfs), add an `(owner, peer)` entry to `DEFAULT_OWNERSHIP` in
-   `restore_claude_history.py`. The orchestrator prunes a peer's snapshot only
+   `restore_claude_code.py`. The orchestrator prunes a peer's snapshot only
    when the owner **positively returns that exact (canonicalized) path** this
    run — see the directive's overlap-resolution rules.
 5. Tests: Layer 1 `is_available()` + `discover()` with mocked subprocess; a

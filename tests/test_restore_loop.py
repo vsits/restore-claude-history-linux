@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from backends._local_dir import LocalDirBackend
-from restore_claude_history import (
+from restore_claude_code import (
     Options,
     index_projects,
     locate_projects_dir,

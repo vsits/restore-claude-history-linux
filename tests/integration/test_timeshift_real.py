@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 
 from backends.timeshift import TimeshiftBackend
-from restore_claude_history import Options, run_restore
+from restore_claude_code import Options, run_restore
 
 BASE = os.environ.get("RCB_TIMESHIFT_TEST_BASE")
 CONFIG = os.environ.get("RCB_TIMESHIFT_TEST_CONFIG", "/etc/timeshift/timeshift.json")

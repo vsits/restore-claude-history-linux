@@ -14,7 +14,7 @@ import pytest
 from backends import default_registry
 from backends._local_dir import LocalDirBackend
 from backends.base import DiscoveredSnapshot
-from restore_claude_history import (
+from restore_claude_code import (
     DEFAULT_OWNERSHIP,
     Options,
     choose_snapshots,

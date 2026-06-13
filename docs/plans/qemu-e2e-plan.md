@@ -66,7 +66,7 @@ tests/e2e/
     └── user-data.yaml    # cloud-init: timeshift install, RSYNC config, real snapshot via `timeshift --create`
 ```
 
-No changes to `backends/` or `restore_claude_history.py`. No changes to existing `tests/integration/` Layer 3 tests — they are the workload, executed inside the VM rather than skipped on the host.
+No changes to `backends/` or `restore_claude_code.py`. No changes to existing `tests/integration/` Layer 3 tests — they are the workload, executed inside the VM rather than skipped on the host.
 
 ## Run model
 
@@ -116,7 +116,7 @@ Each commit is independent; PR opens after ZFS is green locally, the rest land i
 - CI integration (GitHub Actions, self-hosted runner, DO).
 - Multi-distro coverage beyond Ubuntu. openSUSE Tumbleweed coverage and the Snapper backend are a v1.1 follow-up tracked separately; explicitly NOT in scope for the v1 harness.
 - Performance benchmarking.
-- Anything that touches the production code paths in `backends/` or `restore_claude_history.py`.
+- Anything that touches the production code paths in `backends/` or `restore_claude_code.py`.
 
 ## Done criteria
 

@@ -9,13 +9,13 @@ git clone https://github.com/vsits/restore-claude-history-linux
 cd restore-claude-history-linux
 
 # Which backends are available + how many snapshots each found:
-python3 restore_claude_history.py --list-backends
+python3 restore_claude_code.py --list-backends
 
 # Preview what would be restored, copy nothing:
-python3 restore_claude_history.py --dry-run --verbose
+python3 restore_claude_code.py --dry-run --verbose
 
 # Actually restore:
-python3 restore_claude_history.py
+python3 restore_claude_code.py
 ```
 
 Before relying on recovery alone, read [Prevention first](#prevention-first). For per-flag documentation see [Flags](#flags); for the recovery walkthrough see [What it does](#what-it-does); for tips on getting Claude Code to *show* a restored session in `/resume`, see [Resuming a restored session](#resuming-a-restored-session).
@@ -55,7 +55,7 @@ That's ~100 years. There's no documented upper bound; the schema just wants a po
 
 ## Recovery
 
-This script: [`restore_claude_history.py`](restore_claude_history.py). The [Quickstart at the top](#quickstart) is the short version; this section is the reference.
+This script: [`restore_claude_code.py`](restore_claude_code.py). The [Quickstart at the top](#quickstart) is the short version; this section is the reference.
 
 ### Requirements
 

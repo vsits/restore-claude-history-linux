@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-verify_restore.py — Layer 2 end-to-end check for restore_claude_history.py
+verify_restore.py — Layer 2 end-to-end check for restore_claude_code.py
 
 Ported from upstream's macOS Time Machine verifier to the Linux backend model.
 Builds synthetic "snapshots" as tempdirs via LocalDirBackend (no real ZFS /
@@ -27,7 +27,7 @@ from typing import NoReturn
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from backends._local_dir import LocalDirBackend  # noqa: E402
-from restore_claude_history import Options, run_restore  # noqa: E402
+from restore_claude_code import Options, run_restore  # noqa: E402
 
 PROJECT = "-home-user-projects-demo"
 # name -> (small_size, large_size, mtime). The large version lives in the

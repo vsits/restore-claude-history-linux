@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from backends.zfs import ZfsBackend
-from restore_claude_history import Options, run_restore
+from restore_claude_code import Options, run_restore
 
 DATASET = os.environ.get("RCB_ZFS_TEST_DATASET")
 

@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from backends.btrfs import BtrfsBackend
-from restore_claude_history import Options, run_restore
+from restore_claude_code import Options, run_restore
 
 MOUNT = os.environ.get("RCB_BTRFS_TEST_MOUNT")
 
